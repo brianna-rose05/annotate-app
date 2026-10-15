@@ -3,3 +3,4 @@
 *.tfstate.*
 .DS_Store
 node_modules/
+infra/build/

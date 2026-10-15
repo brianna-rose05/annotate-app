@@ -13,3 +13,7 @@ output "distribution_id" {
 output "github_role_arn" {
   value = aws_iam_role.github_deploy.arn
 }
+
+output "api_url" {
+  value = aws_apigatewayv2_stage.default.invoke_url
+}
