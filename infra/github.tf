@@ -23,7 +23,7 @@ data "aws_iam_policy_document" "github_trust" {
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:brianna-rose05/annotate-app:ref:refs/heads/main"]
+      values   = ["repo:brianna-rose05/annotate-app:*"]
     }
   }
 }

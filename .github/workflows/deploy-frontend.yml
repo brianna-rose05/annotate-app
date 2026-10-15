@@ -35,6 +35,16 @@ jobs:
       - run: npm ci
       - run: npm run build
 
+      - name: Debug OIDC claims
+        uses: actions/github-script@v7
+        with:
+         script: |
+            const token = await core.getIDToken('sts.amazonaws.com');
+            const claims = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
+            console.log('sub:', claims.sub);
+            console.log('aud:', claims.aud);
+            console.log('iss:', claims.iss);
+
       # 4. Log in to AWS using OIDC (no stored keys)
       - uses: aws-actions/configure-aws-credentials@v4
         with:
