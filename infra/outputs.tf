@@ -7,5 +7,9 @@ output "site_url" {
 }
 
 output "distribution_id" {
-     value = aws_cloudfront_distribution.frontend.id
+  value = aws_cloudfront_distribution.frontend.id
+}
+
+output "github_role_arn" {
+  value = aws_iam_role.github_deploy.arn
 }
