@@ -29,7 +29,7 @@ export function getSelectionAnchor(container: HTMLElement): Anchor | null {
 }
 
 // Find where an anchor's text is, using prefix/suffix to pick the right match
-function findPosition(text: string, anchor: Anchor): number {
+export function findPosition(text: string, anchor: Anchor): number {
   let best = -1;
   let bestScore = -1;
   let i = text.indexOf(anchor.exact);
