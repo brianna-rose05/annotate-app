@@ -1,0 +1,42 @@
+name: Deploy fetcher
+
+on:
+  push:
+    branches: [main]
+    paths: ["fetcher/**"]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      # Log Docker in to ECR (same as your docker login command)
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      # Build and push, tagged as "latest" AND with the commit ID
+      - name: Build and push image
+        working-directory: fetcher
+        run: |
+          IMAGE=${{ vars.FETCHER_REPO_URL }}
+          docker build --provenance=false -t ${IMAGE}:latest -t ${IMAGE}:${{ github.sha }} .
+          docker push ${IMAGE} --all-tags
+
+      # Tell the server to run its deploy script
+      - name: Redeploy on EC2
+        run: |
+          aws ssm send-command \
+            --targets "Key=tag:Name,Values=annotate-app-fetcher" \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=["/usr/local/bin/deploy-fetcher.sh"]' \
+            --comment "Deploy ${{ github.sha }}"

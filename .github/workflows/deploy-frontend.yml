@@ -33,12 +33,10 @@ jobs:
 
       # 3. Install packages and build (same as you did locally)
       - run: npm ci
-      - run: npm ci
       - run: npm test
       - run: npm run build
         env:
           VITE_API_URL: ${{ vars.API_URL }}
-      - run: npm run build
 
       # 4. Log in to AWS using OIDC (no stored keys)
       - uses: aws-actions/configure-aws-credentials@v4
