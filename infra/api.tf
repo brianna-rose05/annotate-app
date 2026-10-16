@@ -77,3 +77,9 @@ resource "aws_lambda_permission" "api_documents" {
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*"
 }
+
+resource "aws_apigatewayv2_route" "documents_get_one" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "GET /documents/{docId}"
+  target    = "integrations/${aws_apigatewayv2_integration.documents.id}"
+}

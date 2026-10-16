@@ -6,6 +6,10 @@ resource "aws_s3_bucket_policy" "frontend" {
 
 resource "aws_s3_bucket" "frontend" {
   bucket_prefix = "${local.project}-frontend-"
+}
+
+resource "aws_s3_bucket" "content" {
+  bucket_prefix = "${local.project}-content-"
 
 }
 resource "aws_s3_bucket_public_access_block" "frontend" {
@@ -16,6 +20,16 @@ resource "aws_s3_bucket_public_access_block" "frontend" {
   ignore_public_acls      = true
   restrict_public_buckets = true
 }
+
+resource "aws_s3_bucket_public_access_block" "content" {
+  bucket = aws_s3_bucket.content.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
 
 data "aws_iam_policy_document" "frontend" {
   statement {

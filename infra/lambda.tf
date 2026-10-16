@@ -27,8 +27,15 @@ data "aws_iam_policy_document" "lambda_trust" {
 # What the Lambda can do in DynamoDB: save and list, in this table only
 data "aws_iam_policy_document" "lambda_dynamodb" {
   statement {
-    actions   = ["dynamodb:PutItem", "dynamodb:Query"]
+    actions   = ["dynamodb:PutItem", "dynamodb:Query", "dynamodb:GetItem"]
     resources = [aws_dynamodb_table.documents.arn]
+  }
+}
+
+data "aws_iam_policy_document" "lambda_content" {
+  statement {
+    actions   = ["s3:PutObject", "s3:GetObject"]
+    resources = ["${aws_s3_bucket.content.arn}/*"]
   }
 }
 
@@ -37,6 +44,12 @@ resource "aws_iam_role_policy" "lambda_dynamodb" {
   name   = "dynamodb-access"
   role   = aws_iam_role.lambda.id
   policy = data.aws_iam_policy_document.lambda_dynamodb.json
+}
+
+resource "aws_iam_role_policy" "lambda_content" {
+  name   = "content-bucket-access"
+  role   = aws_iam_role.lambda.id
+  policy = data.aws_iam_policy_document.lambda_content.json
 }
 
 # 2b. The role
@@ -68,10 +81,15 @@ resource "aws_lambda_function" "documents" {
   handler          = "index.handler"
   filename         = data.archive_file.documents.output_path
   source_code_hash = data.archive_file.documents.output_base64sha256
+  timeout = 15
+  memory_size = 512 
 
   environment {
     variables = {
       TABLE_NAME = aws_dynamodb_table.documents.name
+      CONTENT_BUCKET = aws_s3_bucket.content.id
     }
   }
 }
+
+
