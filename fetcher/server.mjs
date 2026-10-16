@@ -40,4 +40,4 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => console.log(`Fetcher listening on port ${PORT}`));
+server.listen(PORT, () => console.log(`Fetcher v2 listening on port ${PORT}`));

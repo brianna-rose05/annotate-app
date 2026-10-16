@@ -17,6 +17,8 @@ const TABLE = process.env.TABLE_NAME;
 const BUCKET = process.env.CONTENT_BUCKET;
 const ANNOTATIONS_TABLE = process.env.ANNOTATIONS_TABLE;
 const USER_ID = "brianna"; // placeholder until login is added
+const FETCHER_URL = process.env.FETCHER_URL;
+const FETCHER_SECRET = process.env.FETCHER_SECRET;
 
 const json = (statusCode, data) => ({
   statusCode,
@@ -39,6 +41,21 @@ async function fetchArticle(url) {
   return article;
 }
 
+// Use the EC2 fetcher if it's running; otherwise fetch inside the Lambda
+async function getArticle(url) {
+  if (!FETCHER_URL) return fetchArticle(url);
+
+  const res = await fetch(`${FETCHER_URL}/fetch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-fetcher-secret": FETCHER_SECRET },
+    body: JSON.stringify({ url }),
+    signal: AbortSignal.timeout(12000),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `Fetcher returned ${res.status}`);
+  return data;
+}
+
 export const handler = async (event) => {
   switch (event.routeKey) {
 
@@ -53,7 +70,7 @@ export const handler = async (event) => {
       const item = { userId: USER_ID, docId, url, createdAt: new Date().toISOString() };
 
       try {
-        const article = await fetchArticle(url);
+        const article = await getArticle(url);
         const contentKey = `${USER_ID}/${docId}.html`;
 
         await s3.send(new PutObjectCommand({
@@ -70,6 +87,7 @@ export const handler = async (event) => {
           byline: article.byline,
           siteName: article.siteName,
           contentKey,
+          fetchedBy: FETCHER_URL ? "ec2" : "lambda",
         });
       } catch (err) {
         Object.assign(item, { status: "failed", error: err.message });

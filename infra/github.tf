@@ -53,6 +53,42 @@ data "aws_iam_policy_document" "github_deploy" {
     actions   = ["cloudfront:CreateInvalidation"]
     resources = [aws_cloudfront_distribution.frontend.arn]
   }
+
+    # Log in to ECR (AWS requires "*" for this one action)
+  statement {
+    actions   = ["ecr:GetAuthorizationToken"]
+    resources = ["*"]
+  }
+
+  # Push images to the fetcher repository only
+  statement {
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:InitiateLayerUpload",
+      "ecr:UploadLayerPart",
+      "ecr:CompleteLayerUpload",
+      "ecr:PutImage",
+      "ecr:BatchGetImage",
+    ]
+    resources = [aws_ecr_repository.fetcher.arn]
+  }
+
+  # Run commands through Session Manager, but only on the fetcher server
+  statement {
+    actions   = ["ssm:SendCommand"]
+    resources = ["arn:aws:ec2:us-east-1:*:instance/*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "ssm:resourceTag/Name"
+      values   = ["${local.project}-fetcher"]
+    }
+  }
+
+  statement {
+    actions   = ["ssm:SendCommand"]
+    resources = ["arn:aws:ssm:us-east-1::document/AWS-RunShellScript"]
+  }
 }
 
 # 3b. Attach those permissions to the role

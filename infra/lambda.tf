@@ -24,6 +24,18 @@ data "aws_iam_policy_document" "lambda_trust" {
   }
 }
 
+data "aws_iam_policy_document" "ec2_trust" {
+  statement {
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["ec2.amazonaws.com"]
+    }
+  }
+}
+
+
 # What the Lambda can do in DynamoDB: save and list, in this table only
 data "aws_iam_policy_document" "lambda_dynamodb" {
   statement {
@@ -84,11 +96,13 @@ resource "aws_lambda_function" "documents" {
   timeout = 15
   memory_size = 512 
 
-  environment {
-    variables = {
-      TABLE_NAME = aws_dynamodb_table.documents.name
-      CONTENT_BUCKET = aws_s3_bucket.content.id
-      ANNOTATIONS_TABLE = aws_dynamodb_table.annotations.name
+    environment {
+        variables = {
+            TABLE_NAME        = aws_dynamodb_table.documents.name
+            CONTENT_BUCKET    = aws_s3_bucket.content.id
+            ANNOTATIONS_TABLE = aws_dynamodb_table.annotations.name
+            FETCHER_URL       = var.fetcher_enabled ? "http://${aws_instance.fetcher[0].public_ip}:3000" : ""
+            FETCHER_SECRET    = random_password.fetcher_secret.result
     }
   }
 }

@@ -1,0 +1,29 @@
+#!/bin/bash
+set -euxo pipefail
+
+# 1. Install and start Docker
+dnf install -y docker
+systemctl enable --now docker
+
+# 2. Install a reusable deploy script
+cat > /usr/local/bin/deploy-fetcher.sh <<'EOF'
+#!/bin/bash
+# No "x" here on purpose: printing each command would print the secret into the logs
+set -euo pipefail
+
+SECRET=$(aws ssm get-parameter --region us-east-1 --name "${secret_name}" \
+  --with-decryption --query Parameter.Value --output text)
+
+aws ecr get-login-password --region us-east-1 | \
+  docker login --username AWS --password-stdin ${registry}
+
+docker pull ${image}
+docker rm -f fetcher || true   # stop and remove the old container, if any
+docker run -d --restart always --name fetcher \
+  -p 3000:3000 -e FETCHER_SECRET="$SECRET" \
+  ${image}
+EOF
+chmod +x /usr/local/bin/deploy-fetcher.sh
+
+# 3. Run it once now, at first boot
+/usr/local/bin/deploy-fetcher.sh
