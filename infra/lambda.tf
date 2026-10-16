@@ -27,8 +27,8 @@ data "aws_iam_policy_document" "lambda_trust" {
 # What the Lambda can do in DynamoDB: save and list, in this table only
 data "aws_iam_policy_document" "lambda_dynamodb" {
   statement {
-    actions   = ["dynamodb:PutItem", "dynamodb:Query", "dynamodb:GetItem"]
-    resources = [aws_dynamodb_table.documents.arn]
+    actions   = ["dynamodb:PutItem", "dynamodb:Query", "dynamodb:GetItem", "dynamodb:DeleteItem"]
+    resources = [aws_dynamodb_table.documents.arn, aws_dynamodb_table.annotations.arn]
   }
 }
 
@@ -88,6 +88,7 @@ resource "aws_lambda_function" "documents" {
     variables = {
       TABLE_NAME = aws_dynamodb_table.documents.name
       CONTENT_BUCKET = aws_s3_bucket.content.id
+      ANNOTATIONS_TABLE = aws_dynamodb_table.annotations.name
     }
   }
 }

@@ -1,5 +1,11 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, PutCommand, QueryCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
+import {
+  DynamoDBDocumentClient,
+  PutCommand,
+  QueryCommand,
+  GetCommand,
+  DeleteCommand,
+} from "@aws-sdk/lib-dynamodb";
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom";
@@ -9,6 +15,7 @@ const db = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const s3 = new S3Client({});
 const TABLE = process.env.TABLE_NAME;
 const BUCKET = process.env.CONTENT_BUCKET;
+const ANNOTATIONS_TABLE = process.env.ANNOTATIONS_TABLE;
 const USER_ID = "brianna"; // placeholder until login is added
 
 const json = (statusCode, data) => ({
@@ -21,7 +28,7 @@ const json = (statusCode, data) => ({
 async function fetchArticle(url) {
   const res = await fetch(url, {
     headers: { "User-Agent": "Mozilla/5.0 (compatible; AnnotateApp/1.0)" },
-    signal: AbortSignal.timeout(10000), // give up after 10 seconds
+    signal: AbortSignal.timeout(10000),
   });
   if (!res.ok) throw new Error(`Page returned ${res.status}`);
 
@@ -29,12 +36,13 @@ async function fetchArticle(url) {
   const { document } = parseHTML(html);
   const article = new Readability(document).parse();
   if (!article) throw new Error("Couldn't find an article on that page");
-  return article; // { title, content, excerpt, byline, siteName, ... }
+  return article;
 }
 
 export const handler = async (event) => {
-  // routeKey tells us which route was called, e.g. "POST /documents"
   switch (event.routeKey) {
+
+    // ---------- DOCUMENTS ----------
 
     // Save a link: fetch it, store the article in S3, store the summary in DynamoDB
     case "POST /documents": {
@@ -64,7 +72,6 @@ export const handler = async (event) => {
           contentKey,
         });
       } catch (err) {
-        // Still save the link, but mark it failed so the app can show why
         Object.assign(item, { status: "failed", error: err.message });
       }
 
@@ -97,6 +104,49 @@ export const handler = async (event) => {
         content = await file.Body.transformToString();
       }
       return json(200, { ...Item, content });
+    }
+
+    // ---------- ANNOTATIONS ----------
+
+    // List highlights for one article
+    case "GET /documents/{docId}/annotations": {
+      const { docId } = event.pathParameters;
+      const result = await db.send(new QueryCommand({
+        TableName: ANNOTATIONS_TABLE,
+        KeyConditionExpression: "docId = :d",
+        ExpressionAttributeValues: { ":d": docId },
+      }));
+      return json(200, result.Items);
+    }
+
+    // Save a new highlight
+    case "POST /documents/{docId}/annotations": {
+      const { docId } = event.pathParameters;
+      const { exact, prefix, suffix, note } = JSON.parse(event.body || "{}");
+      if (!exact) return json(400, { error: "exact (the highlighted text) is required" });
+
+      const item = {
+        docId,
+        annotationId: randomUUID(),
+        userId: USER_ID,
+        exact,
+        prefix: prefix ?? "",
+        suffix: suffix ?? "",
+        note: note ?? "",
+        createdAt: new Date().toISOString(),
+      };
+      await db.send(new PutCommand({ TableName: ANNOTATIONS_TABLE, Item: item }));
+      return json(201, item);
+    }
+
+    // Remove a highlight
+    case "DELETE /documents/{docId}/annotations/{annotationId}": {
+      const { docId, annotationId } = event.pathParameters;
+      await db.send(new DeleteCommand({
+        TableName: ANNOTATIONS_TABLE,
+        Key: { docId, annotationId },
+      }));
+      return json(204, null);
     }
 
     default:

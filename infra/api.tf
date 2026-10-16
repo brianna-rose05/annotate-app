@@ -9,7 +9,7 @@ resource "aws_apigatewayv2_api" "main" {
       "https://${aws_cloudfront_distribution.frontend.domain_name}",
       "http://localhost:5173",
     ]
-    allow_methods = ["GET", "POST", "OPTIONS"]
+        allow_methods = ["GET", "POST", "DELETE", "OPTIONS"]
     allow_headers = ["content-type"]
   }
 }
@@ -81,5 +81,23 @@ resource "aws_lambda_permission" "api_documents" {
 resource "aws_apigatewayv2_route" "documents_get_one" {
   api_id    = aws_apigatewayv2_api.main.id
   route_key = "GET /documents/{docId}"
+  target    = "integrations/${aws_apigatewayv2_integration.documents.id}"
+}
+
+resource "aws_apigatewayv2_route" "annotations_list" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "GET /documents/{docId}/annotations"
+  target    = "integrations/${aws_apigatewayv2_integration.documents.id}"
+}
+
+resource "aws_apigatewayv2_route" "annotations_create" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "POST /documents/{docId}/annotations"
+  target    = "integrations/${aws_apigatewayv2_integration.documents.id}"
+}
+
+resource "aws_apigatewayv2_route" "annotations_delete" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "DELETE /documents/{docId}/annotations/{annotationId}"
   target    = "integrations/${aws_apigatewayv2_integration.documents.id}"
 }

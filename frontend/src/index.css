@@ -42,3 +42,29 @@ body {
 .article-body {
   margin-top: 24px;
 }
+mark {
+  background: #fde68a;
+  color: inherit;
+  border-radius: 2px;
+}
+
+.highlight-bar {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 10px 20px;
+  font-size: 1rem;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.notes {
+  margin: 24px 0;
+  padding: 16px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+}
+.notes ul { list-style: none; padding: 0; margin: 0; }
+.notes li { margin-bottom: 12px; }
+.notes p { margin: 4px 0; }
