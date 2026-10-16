@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import Reader from "./Reader";
 
 const API_URL = import.meta.env.VITE_API_URL;
 
@@ -6,12 +7,17 @@ type Doc = {
   docId: string;
   url: string;
   createdAt: string;
+  title?: string;
+  status?: string;
+  error?: string;
 };
 
 export default function App() {
   const [docs, setDocs] = useState<Doc[]>([]);
   const [url, setUrl] = useState("");
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   // GET /documents → load my saved links
   async function loadDocs() {
@@ -21,14 +27,17 @@ export default function App() {
     setDocs(data);
   }
 
-  // POST /documents → save a new link
+  // POST /documents → save a link (the Lambda fetches the article)
   async function saveDoc() {
     setError("");
+    setSaving(true);
     const res = await fetch(`${API_URL}documents`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ url }),
     });
+    setSaving(false);
+
     if (!res.ok) {
       setError("Couldn't save that link.");
       return;
@@ -41,8 +50,18 @@ export default function App() {
     loadDocs();
   }, []);
 
+  // Reading view
+  if (selectedId) {
+    return (
+      <main className="page">
+        <Reader docId={selectedId} onBack={() => setSelectedId(null)} />
+      </main>
+    );
+  }
+
+  // List view
   return (
-    <main style={{ maxWidth: 640, margin: "40px auto", padding: "0 16px" }}>
+    <main className="page">
       <h1>Annotate App</h1>
 
       <form
@@ -60,15 +79,22 @@ export default function App() {
           required
           style={{ flex: 1, padding: 8 }}
         />
-        <button type="submit">Save</button>
+        <button type="submit" disabled={saving}>
+          {saving ? "Fetching…" : "Save"}
+        </button>
       </form>
 
       {error && <p style={{ color: "red" }}>{error}</p>}
 
-      <ul>
+      <ul className="doc-list">
         {docs.map((doc) => (
           <li key={doc.docId}>
-            <a href={doc.url} target="_blank" rel="noreferrer">{doc.url}</a>
+            <button className="doc-link" onClick={() => setSelectedId(doc.docId)}>
+              {doc.title ?? doc.url}
+            </button>
+            {doc.status === "failed" && (
+              <span className="failed"> — couldn't fetch: {doc.error}</span>
+            )}
           </li>
         ))}
       </ul>
