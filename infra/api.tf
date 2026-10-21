@@ -125,3 +125,21 @@ resource "aws_apigatewayv2_route" "collection_highlights" {
   route_key = "GET /collections/{collectionId}/highlights"
   target    = "integrations/${aws_apigatewayv2_integration.documents.id}"
 }
+
+resource "aws_apigatewayv2_route" "collection_update" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "PATCH /collections/{collectionId}"
+  target    = "integrations/${aws_apigatewayv2_integration.documents.id}"
+}
+
+resource "aws_apigatewayv2_route" "collection_delete" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "DELETE /collections/{collectionId}"
+  target    = "integrations/${aws_apigatewayv2_integration.documents.id}"
+}
+
+resource "aws_apigatewayv2_route" "collection_create" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "POST /collections"
+  target    = "integrations/${aws_apigatewayv2_integration.documents.id}"
+}

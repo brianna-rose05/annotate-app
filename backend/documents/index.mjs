@@ -6,6 +6,7 @@ import {
   GetCommand,
   DeleteCommand,
   UpdateCommand,
+  BatchGetCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { Readability } from "@mozilla/readability";
@@ -18,6 +19,7 @@ const TABLE = process.env.TABLE_NAME;
 const BUCKET = process.env.CONTENT_BUCKET;
 const ANNOTATIONS_TABLE = process.env.ANNOTATIONS_TABLE;
 const COLLECTIONS_TABLE = process.env.COLLECTIONS_TABLE;
+const COLLECTION_ITEMS_TABLE = process.env.COLLECTION_ITEMS_TABLE;
 const FETCHER_URL = process.env.FETCHER_URL;
 const FETCHER_SECRET = process.env.FETCHER_SECRET;
 const USER_ID = "brianna"; // placeholder until login is added
@@ -27,6 +29,8 @@ const json = (statusCode, data) => ({
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify(data),
 });
+
+// ---------- General helpers ----------
 
 // Same URL → same ID, so saving a link twice doesn't create a duplicate
 function docIdFor(url) {
@@ -43,17 +47,12 @@ function slugify(name) {
     .slice(0, 60);
 }
 
-// Create the collection if it doesn't exist yet (keeps the original name and date if it does)
-async function ensureCollection(collectionId, name) {
-  try {
-    await db.send(new PutCommand({
-      TableName: COLLECTIONS_TABLE,
-      Item: { userId: USER_ID, collectionId, name, createdAt: new Date().toISOString() },
-      ConditionExpression: "attribute_not_exists(collectionId)",
-    }));
-  } catch (err) {
-    if (err.name !== "ConditionalCheckFailedException") throw err; // already exists = fine
-  }
+// DynamoDB "string sets" come back as JavaScript Sets, which JSON can't represent.
+// Convert to a plain array before sending a highlight to the browser.
+function toClient(item) {
+  if (!item) return item;
+  const { collectionIds, ...rest } = item;
+  return { ...rest, collectionIds: collectionIds ? [...collectionIds] : [] };
 }
 
 // The article's title and URL, copied onto each highlight. Returns null if the article doesn't exist.
@@ -65,6 +64,104 @@ async function getDocInfo(docId) {
   if (!Item) return null;
   return { docTitle: Item.title ?? Item.url, docUrl: Item.url };
 }
+
+// ---------- Collection helpers ----------
+
+const collectionKeyFor = (collectionId) => `${USER_ID}#${collectionId}`;
+
+// All of my collections (there are only ever a handful, so one query is fine)
+async function listCollections() {
+  const { Items } = await db.send(new QueryCommand({
+    TableName: COLLECTIONS_TABLE,
+    KeyConditionExpression: "userId = :u",
+    ExpressionAttributeValues: { ":u": USER_ID },
+  }));
+  return Items;
+}
+
+// Find a collection by name (ignoring capitals), or create it. Returns { collectionId, name }.
+async function resolveCollection(rawName) {
+  const name = rawName.trim();
+  const all = await listCollections();
+
+  const existing = all.find((c) => c.name.toLowerCase() === name.toLowerCase());
+  if (existing) return { collectionId: existing.collectionId, name: existing.name };
+
+  let collectionId = slugify(name) || "collection";
+  if (all.some((c) => c.collectionId === collectionId)) {
+    collectionId = `${collectionId}-${randomUUID().slice(0, 6)}`;
+  }
+
+  await db.send(new PutCommand({
+    TableName: COLLECTIONS_TABLE,
+    Item: { userId: USER_ID, collectionId, name, createdAt: new Date().toISOString() },
+  }));
+  return { collectionId, name };
+}
+
+// A list of names → a list of collection IDs (creating any that don't exist yet)
+async function resolveCollections(names = []) {
+  const ids = [];
+  for (const name of names) {
+    if (!name?.trim()) continue;
+    const { collectionId } = await resolveCollection(name);
+    if (!ids.includes(collectionId)) ids.push(collectionId);
+  }
+  return ids;
+}
+
+// Membership rows: "this highlight is in these collections"
+async function addToCollections(annotation, collectionIds) {
+  for (const collectionId of collectionIds) {
+    await db.send(new PutCommand({
+      TableName: COLLECTION_ITEMS_TABLE,
+      Item: {
+        collectionKey: collectionKeyFor(collectionId),
+        annotationId: annotation.annotationId,
+        docId: annotation.docId,
+        createdAt: annotation.createdAt,
+      },
+    }));
+  }
+}
+
+async function removeFromCollections(annotationId, collectionIds) {
+  for (const collectionId of collectionIds) {
+    await db.send(new DeleteCommand({
+      TableName: COLLECTION_ITEMS_TABLE,
+      Key: { collectionKey: collectionKeyFor(collectionId), annotationId },
+    }));
+  }
+}
+
+// The membership rows for one collection
+async function collectionMembers(collectionId) {
+  const { Items } = await db.send(new QueryCommand({
+    TableName: COLLECTION_ITEMS_TABLE,
+    KeyConditionExpression: "collectionKey = :k",
+    ExpressionAttributeValues: { ":k": collectionKeyFor(collectionId) },
+  }));
+  return Items;
+}
+
+// Every highlight in a collection, newest first
+async function collectionHighlights(collectionId) {
+  const members = await collectionMembers(collectionId);
+  const highlights = [];
+
+  // BatchGet fetches up to 100 items per request
+  for (let i = 0; i < members.length; i += 100) {
+    const keys = members.slice(i, i + 100).map((m) => ({ docId: m.docId, annotationId: m.annotationId }));
+    const res = await db.send(new BatchGetCommand({
+      RequestItems: { [ANNOTATIONS_TABLE]: { Keys: keys } },
+    }));
+    highlights.push(...res.Responses[ANNOTATIONS_TABLE]);
+  }
+
+  return highlights.map(toClient).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+// ---------- Article fetching ----------
 
 // Turn relative links/images ("x4.png") into full URLs on the original site
 function absolutizeUrls(html, baseUrl) {
@@ -88,7 +185,6 @@ function absolutizeUrls(html, baseUrl) {
   return document.body.innerHTML;
 }
 
-// Download a page and pull out just the article
 async function fetchArticle(url) {
   const res = await fetch(url, {
     headers: { "User-Agent": "Mozilla/5.0 (compatible; AnnotateApp/1.0)" },
@@ -109,7 +205,6 @@ async function fetchArticle(url) {
   return article;
 }
 
-// Use the EC2 fetcher if it's running; otherwise fetch inside the Lambda
 async function getArticle(url) {
   if (!FETCHER_URL) return fetchArticle(url);
 
@@ -123,6 +218,8 @@ async function getArticle(url) {
   if (!res.ok) throw new Error(data.error || `Fetcher returned ${res.status}`);
   return data;
 }
+
+// ---------- Routes ----------
 
 export const handler = async (event) => {
   switch (event.routeKey) {
@@ -212,6 +309,7 @@ export const handler = async (event) => {
       return json(200, { ...Item, content });
     }
 
+    // Delete an article and everything it owns
     case "DELETE /documents/{docId}": {
       const { docId } = event.pathParameters;
       const { Item } = await db.send(new GetCommand({
@@ -230,6 +328,7 @@ export const handler = async (event) => {
         ExpressionAttributeValues: { ":d": docId },
       }));
       for (const a of annotations.Items) {
+        await removeFromCollections(a.annotationId, [...(a.collectionIds ?? [])]);
         await db.send(new DeleteCommand({
           TableName: ANNOTATIONS_TABLE,
           Key: { docId, annotationId: a.annotationId },
@@ -249,13 +348,13 @@ export const handler = async (event) => {
         KeyConditionExpression: "docId = :d",
         ExpressionAttributeValues: { ":d": docId },
       }));
-      return json(200, result.Items);
+      return json(200, result.Items.map(toClient));
     }
 
-    // Save a new highlight (optionally into a collection)
+    // Save a new highlight, in any number of collections
     case "POST /documents/{docId}/annotations": {
       const { docId } = event.pathParameters;
-      const { exact, prefix, suffix, note, collection } = JSON.parse(event.body || "{}");
+      const { exact, prefix, suffix, note, collections } = JSON.parse(event.body || "{}");
       if (!exact) return json(400, { error: "exact (the highlighted text) is required" });
 
       const docInfo = await getDocInfo(docId);
@@ -273,59 +372,58 @@ export const handler = async (event) => {
         ...docInfo, // docTitle + docUrl
       };
 
-      const collectionId = slugify(collection);
-      if (collectionId) {
-        await ensureCollection(collectionId, collection.trim());
-        Object.assign(item, {
-          collectionId,
-          collectionName: collection.trim(),
-          collectionKey: `${USER_ID}#${collectionId}`, // what the byCollection index looks up
-        });
-      }
+      const collectionIds = await resolveCollections(collections);
+      if (collectionIds.length) item.collectionIds = new Set(collectionIds); // a DynamoDB string set
 
       await db.send(new PutCommand({ TableName: ANNOTATIONS_TABLE, Item: item }));
-      return json(201, item);
+      await addToCollections(item, collectionIds);
+      return json(201, toClient(item));
     }
 
-    // Edit a highlight's note and/or collection
+    // Edit a highlight's note and/or its collections
     case "PATCH /documents/{docId}/annotations/{annotationId}": {
       const { docId, annotationId } = event.pathParameters;
       const body = JSON.parse(event.body || "{}");
 
+      const { Item: existing } = await db.send(new GetCommand({
+        TableName: ANNOTATIONS_TABLE,
+        Key: { docId, annotationId },
+      }));
+      if (!existing) return json(404, { error: "not found" });
+
       const sets = [];
       const removes = [];
       const values = {};
+      let added = [];
+      let removed = [];
 
       if (body.note !== undefined) {
         sets.push("note = :note");
         values[":note"] = body.note;
       }
 
-      if (body.collection !== undefined) {
-        const collectionId = slugify(body.collection);
-        if (collectionId) {
-          // Move into a collection
-          await ensureCollection(collectionId, body.collection.trim());
-          const docInfo = await getDocInfo(docId);
-          if (!docInfo) return json(404, { error: "article not found" });
-          const { docTitle, docUrl } = docInfo;
-          sets.push(
-            "collectionId = :cid",
-            "collectionName = :cname",
-            "collectionKey = :ckey",
-            "docTitle = :dtitle",
-            "docUrl = :durl"
-          );
-          Object.assign(values, {
-            ":cid": collectionId,
-            ":cname": body.collection.trim(),
-            ":ckey": `${USER_ID}#${collectionId}`,
-            ":dtitle": docTitle,
-            ":durl": docUrl,
-          });
+      if (body.collections !== undefined) {
+        const newIds = await resolveCollections(body.collections);
+        const oldIds = [...(existing.collectionIds ?? [])];
+        added = newIds.filter((id) => !oldIds.includes(id));
+        removed = oldIds.filter((id) => !newIds.includes(id));
+
+        // DynamoDB doesn't allow empty sets, so "no collections" means removing the field
+        if (newIds.length) {
+          sets.push("collectionIds = :cids");
+          values[":cids"] = new Set(newIds);
         } else {
-          // Empty name = take it out of its collection (it disappears from the index)
-          removes.push("collectionId", "collectionName", "collectionKey");
+          removes.push("collectionIds");
+        }
+
+        // Older highlights may not have the article title copied onto them yet
+        if (!existing.docTitle) {
+          const info = await getDocInfo(docId);
+          if (info) {
+            sets.push("docTitle = :dtitle", "docUrl = :durl");
+            values[":dtitle"] = info.docTitle;
+            values[":durl"] = info.docUrl;
+          }
         }
       }
 
@@ -335,24 +433,30 @@ export const handler = async (event) => {
       if (sets.length) updateExpression += `SET ${sets.join(", ")} `;
       if (removes.length) updateExpression += `REMOVE ${removes.join(", ")}`;
 
-      try {
-        const result = await db.send(new UpdateCommand({
-          TableName: ANNOTATIONS_TABLE,
-          Key: { docId, annotationId },
-          UpdateExpression: updateExpression.trim(),
-          ConditionExpression: "attribute_exists(annotationId)",
-          ...(Object.keys(values).length ? { ExpressionAttributeValues: values } : {}),
-          ReturnValues: "ALL_NEW",
-        }));
-        return json(200, result.Attributes);
-      } catch (err) {
-        if (err.name === "ConditionalCheckFailedException") return json(404, { error: "not found" });
-        throw err;
-      }
+      const result = await db.send(new UpdateCommand({
+        TableName: ANNOTATIONS_TABLE,
+        Key: { docId, annotationId },
+        UpdateExpression: updateExpression.trim(),
+        ...(Object.keys(values).length ? { ExpressionAttributeValues: values } : {}),
+        ReturnValues: "ALL_NEW",
+      }));
+
+      // Keep the membership table in sync
+      await addToCollections(result.Attributes, added);
+      await removeFromCollections(annotationId, removed);
+
+      return json(200, toClient(result.Attributes));
     }
 
+    // Delete a highlight (and its memberships)
     case "DELETE /documents/{docId}/annotations/{annotationId}": {
       const { docId, annotationId } = event.pathParameters;
+      const { Item } = await db.send(new GetCommand({
+        TableName: ANNOTATIONS_TABLE,
+        Key: { docId, annotationId },
+      }));
+      if (Item) await removeFromCollections(annotationId, [...(Item.collectionIds ?? [])]);
+
       await db.send(new DeleteCommand({
         TableName: ANNOTATIONS_TABLE,
         Key: { docId, annotationId },
@@ -362,28 +466,80 @@ export const handler = async (event) => {
 
     // ---------- COLLECTIONS ----------
 
-    // List my collections
-    case "GET /collections": {
-      const result = await db.send(new QueryCommand({
-        TableName: COLLECTIONS_TABLE,
-        KeyConditionExpression: "userId = :u",
-        ExpressionAttributeValues: { ":u": USER_ID },
-      }));
-      const collections = result.Items.sort((a, b) => a.name.localeCompare(b.name));
-      return json(200, collections);
+    case "POST /collections": {
+      const name = JSON.parse(event.body || "{}").name?.trim();
+      if (!name) return json(400, { error: "name is required" });
+
+      const all = await listCollections();
+      if (all.some((c) => c.name.toLowerCase() === name.toLowerCase())) {
+        return json(409, { error: "You already have a collection with that name" });
+      }
+      return json(201, await resolveCollection(name));
     }
 
-    // Every highlight in one collection, across all articles, newest first
+    case "GET /collections": {
+      const all = await listCollections();
+      return json(200, all.sort((a, b) => a.name.localeCompare(b.name)));
+    }
+
     case "GET /collections/{collectionId}/highlights": {
       const { collectionId } = event.pathParameters;
-      const result = await db.send(new QueryCommand({
-        TableName: ANNOTATIONS_TABLE,
-        IndexName: "byCollection", // ← use the GSI instead of the main table
-        KeyConditionExpression: "collectionKey = :k",
-        ExpressionAttributeValues: { ":k": `${USER_ID}#${collectionId}` },
-        ScanIndexForward: false, // newest first (sorted by the index's createdAt)
+      return json(200, await collectionHighlights(collectionId));
+    }
+
+    // Rename: only the collection row changes, since highlights store IDs, not names
+    case "PATCH /collections/{collectionId}": {
+      const { collectionId } = event.pathParameters;
+      const name = JSON.parse(event.body || "{}").name?.trim();
+      if (!name) return json(400, { error: "name is required" });
+
+      const all = await listCollections();
+      if (!all.some((c) => c.collectionId === collectionId)) return json(404, { error: "not found" });
+      if (all.some((c) => c.collectionId !== collectionId && c.name.toLowerCase() === name.toLowerCase())) {
+        return json(409, { error: "You already have a collection with that name" });
+      }
+
+      await db.send(new UpdateCommand({
+        TableName: COLLECTIONS_TABLE,
+        Key: { userId: USER_ID, collectionId },
+        UpdateExpression: "SET #n = :name",
+        ExpressionAttributeNames: { "#n": "name" }, // "name" is a DynamoDB reserved word
+        ExpressionAttributeValues: { ":name": name },
       }));
-      return json(200, result.Items);
+
+      return json(200, { collectionId, name });
+    }
+
+    // Delete a collection (its highlights stay on their articles)
+    case "DELETE /collections/{collectionId}": {
+      const { collectionId } = event.pathParameters;
+
+      for (const m of await collectionMembers(collectionId)) {
+        // 1. Take this collection off the highlight's list (only if the highlight still exists)
+        try {
+          await db.send(new UpdateCommand({
+            TableName: ANNOTATIONS_TABLE,
+            Key: { docId: m.docId, annotationId: m.annotationId },
+            UpdateExpression: "DELETE collectionIds :c", // removes one value from a set
+            ConditionExpression: "attribute_exists(annotationId)",
+            ExpressionAttributeValues: { ":c": new Set([collectionId]) },
+          }));
+        } catch (err) {
+          if (err.name !== "ConditionalCheckFailedException") throw err;
+        }
+        // 2. Remove the membership row
+        await db.send(new DeleteCommand({
+          TableName: COLLECTION_ITEMS_TABLE,
+          Key: { collectionKey: m.collectionKey, annotationId: m.annotationId },
+        }));
+      }
+
+      // 3. The collection itself
+      await db.send(new DeleteCommand({
+        TableName: COLLECTIONS_TABLE,
+        Key: { userId: USER_ID, collectionId },
+      }));
+      return json(204, null);
     }
 
     default:

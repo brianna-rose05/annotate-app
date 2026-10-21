@@ -30,23 +30,6 @@ resource "aws_dynamodb_table" "annotations" {
     name = "annotationId"
     type = "S"
   }
-    attribute {
-    name = "collectionKey"
-    type = "S"
-  }
-
-  attribute {
-    name = "createdAt"
-    type = "S"
-  }
-
-  # A second way to look up highlights: by collection, newest first
-  global_secondary_index {
-    name            = "byCollection"
-    hash_key        = "collectionKey"
-    range_key       = "createdAt"
-    projection_type = "ALL" # copy every field into the index
-  }
 }
 
 resource "aws_dynamodb_table" "collections" {
@@ -62,6 +45,24 @@ resource "aws_dynamodb_table" "collections" {
 
   attribute {
     name = "collectionId"
+    type = "S"
+  }
+}
+
+# Which highlights are in which collection: one row per (collection, highlight) pair
+resource "aws_dynamodb_table" "collection_items" {
+  name         = "${local.project}-collection-items"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "collectionKey"
+  range_key    = "annotationId"
+
+  attribute {
+    name = "collectionKey"
+    type = "S"
+  }
+
+  attribute {
+    name = "annotationId"
     type = "S"
   }
 }

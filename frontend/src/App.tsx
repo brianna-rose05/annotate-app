@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import Reader from "./Reader";
+import { CollectionsList, CollectionView, type Collection } from "./Collections";
 
 const API_URL = import.meta.env.VITE_API_URL;
 
@@ -15,8 +16,8 @@ type Doc = {
 };
 
 type Message = { type: "error" | "info"; text: string } | null;
+type Tab = "articles" | "collections";
 
-// "https://www.example.com/a/b" → "example.com"
 function hostname(url: string) {
   try {
     return new URL(url).hostname.replace(/^www\./, "");
@@ -38,17 +39,21 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [url, setUrl] = useState("");
   const [saving, setSaving] = useState(false);
-  const [busyId, setBusyId] = useState<string | null>(null); // card being retried/deleted
+  const [busyId, setBusyId] = useState<string | null>(null);
   const [message, setMessage] = useState<Message>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>("articles");
 
-  // GET /documents
+  // What's open right now
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [focusAnnotationId, setFocusAnnotationId] = useState<string | null>(null);
+  const [selectedCollection, setSelectedCollection] = useState<Collection | null>(null);
+
   async function loadDocs() {
     try {
       const res = await fetch(`${API_URL}documents`);
       if (!res.ok) throw new Error();
       const data: Doc[] = await res.json();
-      data.sort((a, b) => b.createdAt.localeCompare(a.createdAt)); // newest first
+      data.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
       setDocs(data);
     } catch {
       setMessage({ type: "error", text: "Couldn't load your articles. Check your connection and refresh." });
@@ -57,7 +62,6 @@ export default function App() {
     }
   }
 
-  // POST /documents (also used for retries, since saving the same URL re-fetches failed ones)
   async function saveUrl(link: string): Promise<Doc> {
     const res = await fetch(`${API_URL}documents`, {
       method: "POST",
@@ -93,7 +97,6 @@ export default function App() {
     setBusyId(doc.docId);
     try {
       const saved = await saveUrl(doc.url);
-      // Older links have random IDs; a retry saves under the new URL-based ID, so remove the old copy
       if (saved.docId !== doc.docId) {
         await fetch(`${API_URL}documents/${doc.docId}`, { method: "DELETE" });
       }
@@ -124,15 +127,42 @@ export default function App() {
     }
   }
 
+  function openArticle(docId: string, annotationId: string | null = null) {
+    setSelectedId(docId);
+    setFocusAnnotationId(annotationId);
+  }
+
   useEffect(() => {
     loadDocs();
   }, []);
 
-  // ---------- Reading view ----------
+  // ---------- Reading an article ----------
   if (selectedId) {
     return (
       <main className="page">
-        <Reader docId={selectedId} onBack={() => setSelectedId(null)} />
+        <Reader
+          docId={selectedId}
+          focusAnnotationId={focusAnnotationId}
+          onBack={() => {
+            setSelectedId(null);
+            setFocusAnnotationId(null);
+          }}
+        />
+      </main>
+    );
+  }
+
+  // ---------- Looking at one collection ----------
+  if (selectedCollection) {
+    return (
+      <main className="page">
+        <CollectionView
+          collection={selectedCollection}
+          onBack={() => setSelectedCollection(null)}
+          onOpenHighlight={(docId, annotationId) => openArticle(docId, annotationId)}
+          onRenamed={(updated) => setSelectedCollection(updated)}
+          onDeleted={() => setSelectedCollection(null)}
+        />
       </main>
     );
   }
@@ -145,82 +175,110 @@ export default function App() {
         <p className="tagline">Save articles. Highlight what matters.</p>
       </header>
 
-      <form
-        className="save-bar"
-        onSubmit={(e) => {
-          e.preventDefault();
-          handleSave();
-        }}
-      >
-        <input
-          type="url"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          placeholder="Paste an article link…"
-          required
-          disabled={saving}
-        />
-        <button className="btn btn-primary" type="submit" disabled={saving || !url.trim()}>
-          {saving ? (
-            <>
-              <span className="spinner" /> Fetching…
-            </>
-          ) : (
-            "Save"
-          )}
+      <nav className="tabs" role="tablist">
+        <button
+          role="tab"
+          aria-selected={tab === "articles"}
+          className={tab === "articles" ? "tab tab-active" : "tab"}
+          onClick={() => setTab("articles")}
+        >
+          Articles
         </button>
-      </form>
+        <button
+          role="tab"
+          aria-selected={tab === "collections"}
+          className={tab === "collections" ? "tab tab-active" : "tab"}
+          onClick={() => setTab("collections")}
+        >
+          Collections
+        </button>
+      </nav>
 
-      {message && <p className={`message message-${message.type}`}>{message.text}</p>}
+      {tab === "collections" ? (
+        <CollectionsList onOpen={setSelectedCollection} />
+      ) : (
+        <>
+          <form
+            className="save-bar"
+            onSubmit={(e) => {
+              e.preventDefault();
+              handleSave();
+            }}
+          >
+            <input
+              type="url"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder="Paste an article link…"
+              required
+              disabled={saving}
+            />
+            <button className="btn btn-primary" type="submit" disabled={saving || !url.trim()}>
+              {saving ? (
+                <>
+                  <span className="spinner" /> Fetching…
+                </>
+              ) : (
+                "Save"
+              )}
+            </button>
+          </form>
 
-      <section className="doc-list">
-        {loading ? (
-          [1, 2, 3].map((n) => <div key={n} className="card skeleton" />)
-        ) : docs.length === 0 ? (
-          <div className="empty">
-            <p className="empty-title">No articles yet</p>
-            <p className="muted">Paste a link above to save your first one.</p>
-          </div>
-        ) : (
-          docs.map((doc) => {
-            const failed = doc.status === "failed";
-            const busy = busyId === doc.docId;
-            return (
-              <article
-                key={doc.docId}
-                className={`card ${failed ? "card-failed" : "card-clickable"} ${busy ? "card-busy" : ""}`}
-                onClick={() => !failed && !busy && setSelectedId(doc.docId)}
-              >
-                <div className="card-meta">
-                  <span>{hostname(doc.url)}</span>
-                  <span aria-hidden>·</span>
-                  <span>{formatDate(doc.createdAt)}</span>
-                </div>
+          {message && <p className={`message message-${message.type}`}>{message.text}</p>}
 
-                <h2 className="card-title">{doc.title ?? doc.url}</h2>
+          <section className="doc-list">
+            {loading ? (
+              [1, 2, 3].map((n) => <div key={n} className="card skeleton" />)
+            ) : docs.length === 0 ? (
+              <div className="empty">
+                <p className="empty-title">No articles yet</p>
+                <p className="muted">Paste a link above to save your first one.</p>
+              </div>
+            ) : (
+              docs.map((doc) => {
+                const failed = doc.status === "failed";
+                const busy = busyId === doc.docId;
+                return (
+                  <article
+                    key={doc.docId}
+                    className={`card ${failed ? "card-failed" : "card-clickable"} ${busy ? "card-busy" : ""}`}
+                    onClick={() => !failed && !busy && openArticle(doc.docId)}
+                  >
+                    <div className="card-meta">
+                      <span>{hostname(doc.url)}</span>
+                      <span aria-hidden>·</span>
+                      <span>{formatDate(doc.createdAt)}</span>
+                    </div>
 
-                {failed ? (
-                  <p className="card-error">Couldn't fetch this article: {doc.error}</p>
-                ) : (
-                  doc.excerpt && <p className="card-excerpt">{doc.excerpt}</p>
-                )}
+                    <h2 className="card-title">{doc.title ?? doc.url}</h2>
 
-                {/* stopPropagation: clicking a button shouldn't also open the article */}
-                <div className="card-actions" onClick={(e) => e.stopPropagation()}>
-                  {failed && (
-                    <button className="btn btn-small" onClick={() => handleRetry(doc)} disabled={busy}>
-                      {busy ? "Retrying…" : "Retry"}
-                    </button>
-                  )}
-                  <button className="btn btn-small btn-ghost" onClick={() => handleDelete(doc)} disabled={busy}>
-                    Delete
-                  </button>
-                </div>
-              </article>
-            );
-          })
-        )}
-      </section>
+                    {failed ? (
+                      <p className="card-error">Couldn't fetch this article: {doc.error}</p>
+                    ) : (
+                      doc.excerpt && <p className="card-excerpt">{doc.excerpt}</p>
+                    )}
+
+                    <div className="card-actions" onClick={(e) => e.stopPropagation()}>
+                      {failed && (
+                        <button className="btn btn-small" onClick={() => handleRetry(doc)} disabled={busy}>
+                          {busy ? "Retrying…" : "Retry"}
+                        </button>
+                      )}
+                      <button
+                        className="btn btn-small btn-ghost"
+                        onClick={() => handleDelete(doc)}
+                        disabled={busy}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </article>
+                );
+              })
+            )}
+          </section>
+        </>
+      )}
     </main>
   );
 }

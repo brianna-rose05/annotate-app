@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type MouseEvent } from "react";
 import DOMPurify from "dompurify";
 import { applyHighlight, getSelectionAnchor, type Anchor } from "./highlight";
+import CollectionPicker from "./CollectionPicker";
 
 const API_URL = import.meta.env.VITE_API_URL;
 const PENDING = "pending"; // id for the temporary highlight shown while the tooltip is open
@@ -18,8 +19,7 @@ type Annotation = Anchor & {
   annotationId: string;
   note: string;
   createdAt: string;
-  collectionId?: string;
-  collectionName?: string;
+  collectionIds: string[]; // IDs only; names come from the collections list
 };
 
 type Collection = { collectionId: string; name: string };
@@ -28,21 +28,8 @@ type Collection = { collectionId: string; name: string };
 type EditorFocus = false | "note" | "collection";
 
 type Popover =
-  | {
-      mode: "new";
-      anchor: Anchor;
-      top: number;
-      left: number;
-      editing: EditorFocus;
-    }
-  | {
-      mode: "edit";
-      annotationId: string;
-      notice?: string;
-      top: number;
-      left: number;
-      editing: EditorFocus;
-    };
+  | { mode: "new"; anchor: Anchor; top: number; left: number; editing: EditorFocus }
+  | { mode: "edit"; annotationId: string; notice?: string; top: number; left: number; editing: EditorFocus };
 
 // ---------- Icons (from the Lucide icon set) ----------
 const iconProps = {
@@ -84,7 +71,9 @@ async function fetchAnnotations(docId: string): Promise<Annotation[]> {
   const res = await fetch(`${API_URL}documents/${docId}/annotations`);
   if (!res.ok) throw new Error();
   const data: Annotation[] = await res.json();
-  return data.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  return data
+    .map((a) => ({ ...a, collectionIds: a.collectionIds ?? [] }))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
 async function fetchCollections(): Promise<Collection[]> {
@@ -93,14 +82,12 @@ async function fetchCollections(): Promise<Collection[]> {
   return res.json();
 }
 
+// Some sites (like arXiv) put their own bullet or number inside each <li>; remove the duplicate
 function removeDuplicateListMarkers(el: HTMLElement) {
   el.querySelectorAll("li").forEach((li) => {
     const first = li.firstElementChild;
     const text = first?.textContent?.trim() ?? "";
-    if (
-      first?.tagName === "SPAN" &&
-      /^([•·∙◦▪–\-*]|\(?\w{1,4}[.)])$/.test(text)
-    ) {
+    if (first?.tagName === "SPAN" && /^([•·∙◦▪–\-*]|\(?\w{1,4}[.)])$/.test(text)) {
       first.remove();
     }
   });
@@ -114,22 +101,22 @@ function hostname(url: string) {
   }
 }
 
+// Place the tooltip centered just ABOVE something, without going off the screen edges
 function positionAbove(rect: DOMRect) {
   const half = 160;
   const center = rect.left + rect.width / 2;
-  const left = Math.min(
-    Math.max(center, half + 8),
-    window.innerWidth - half - 8,
-  );
+  const left = Math.min(Math.max(center, half + 8), window.innerWidth - half - 8);
   return { top: rect.top + window.scrollY - 10, left: left + window.scrollX };
 }
 
 export default function Reader({
   docId,
   onBack,
+  focusAnnotationId = null,
 }: {
   docId: string;
   onBack: () => void;
+  focusAnnotationId?: string | null;
 }) {
   const [doc, setDoc] = useState<FullDoc | null>(null);
   const [loadError, setLoadError] = useState(false);
@@ -137,24 +124,26 @@ export default function Reader({
   const [collections, setCollections] = useState<Collection[]>([]);
   const [popover, setPopover] = useState<Popover | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
-  const [collectionDraft, setCollectionDraft] = useState("");
-  const [lastCollection, setLastCollection] = useState(""); // remembered between highlights
+  const [collectionsDraft, setCollectionsDraft] = useState<string[]>([]);
+  const [lastCollections, setLastCollections] = useState<string[]>([]); // remembered between highlights
   const [listEditingId, setListEditingId] = useState<string | null>(null);
   const [listNoteDraft, setListNoteDraft] = useState("");
-  const [listCollectionDraft, setListCollectionDraft] = useState("");
+  const [listCollectionsDraft, setListCollectionsDraft] = useState<string[]>([]);
   const [listFocus, setListFocus] = useState<"note" | "collection">("note");
-  const [hover, setHover] = useState<{
-    note: string;
-    collection?: string;
-    top: number;
-    left: number;
-  } | null>(null);
+  const [hover, setHover] = useState<{ note: string; collections: string[]; top: number; left: number } | null>(null);
   const [saving, setSaving] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const scrolledToFocus = useRef(false); // only jump to a highlight once, not on every redraw
 
   const pendingAnchor = popover?.mode === "new" ? popover.anchor : null;
 
-  // Load the article, its highlights, and the collection names (for suggestions)
+  // Highlights store collection IDs; turn them into names for display
+  const nameById = new Map(collections.map((c) => [c.collectionId, c.name]));
+  function namesFor(a?: Annotation): string[] {
+    return (a?.collectionIds ?? []).map((id) => nameById.get(id)).filter((n): n is string => Boolean(n));
+  }
+
+  // Load the article, its highlights, and the collections
   useEffect(() => {
     fetch(`${API_URL}documents/${docId}`)
       .then((res) => {
@@ -163,12 +152,8 @@ export default function Reader({
       })
       .then(setDoc)
       .catch(() => setLoadError(true));
-    fetchAnnotations(docId)
-      .then(setAnnotations)
-      .catch(() => {});
-    fetchCollections()
-      .then(setCollections)
-      .catch(() => {});
+    fetchAnnotations(docId).then(setAnnotations).catch(() => {});
+    fetchCollections().then(setCollections).catch(() => {});
   }, [docId]);
 
   // Draw the article → clean it up → saved highlights → the pending one on top
@@ -179,8 +164,19 @@ export default function Reader({
     removeDuplicateListMarkers(el);
     for (const a of annotations) applyHighlight(el, a, a.annotationId);
     if (pendingAnchor) applyHighlight(el, pendingAnchor, PENDING);
-  }, [doc, annotations, pendingAnchor]);
 
+    // Opened from a collection? Scroll to that highlight once, with a flash
+    if (focusAnnotationId && !scrolledToFocus.current) {
+      const mark = el.querySelector<HTMLElement>(`mark[data-id="${focusAnnotationId}"]`);
+      if (mark) {
+        scrolledToFocus.current = true;
+        mark.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.querySelectorAll(`mark[data-id="${focusAnnotationId}"]`).forEach((m) => m.classList.add("flash"));
+      }
+    }
+  }, [doc, annotations, pendingAnchor, focusAnnotationId]);
+
+  // Escape closes the tooltip
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setPopover(null);
@@ -189,17 +185,18 @@ export default function Reader({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // Reload collections first, then highlights, so new collection names are known before tags show
+  async function refresh() {
+    const [cols, anns] = await Promise.all([fetchCollections(), fetchAnnotations(docId)]);
+    setCollections(cols);
+    setAnnotations(anns);
+  }
+
   function openExisting(annotationId: string, rect: DOMRect, notice?: string) {
     const existing = annotations.find((a) => a.annotationId === annotationId);
     setNoteDraft(existing?.note ?? "");
-    setCollectionDraft(existing?.collectionName ?? "");
-    setPopover({
-      mode: "edit",
-      annotationId,
-      notice,
-      editing: false,
-      ...positionAbove(rect),
-    });
+    setCollectionsDraft(namesFor(existing));
+    setPopover({ mode: "edit", annotationId, notice, editing: false, ...positionAbove(rect) });
   }
 
   function openEditor(focus: "note" | "collection") {
@@ -209,26 +206,18 @@ export default function Reader({
   // ---------- Hover preview ----------
   function handleMouseOver(e: MouseEvent<HTMLDivElement>) {
     if (popover) return;
-    const mark = (e.target as HTMLElement).closest<HTMLElement>(
-      "mark[data-id]",
-    );
+    const mark = (e.target as HTMLElement).closest<HTMLElement>("mark[data-id]");
     if (!mark || mark.dataset.id === PENDING) return;
     const a = annotations.find((x) => x.annotationId === mark.dataset.id);
-    if (a && (a.note || a.collectionName)) {
-      setHover({
-        note: a.note,
-        collection: a.collectionName,
-        ...positionAbove(mark.getBoundingClientRect()),
-      });
+    const names = namesFor(a);
+    if (a && (a.note || names.length)) {
+      setHover({ note: a.note, collections: names, ...positionAbove(mark.getBoundingClientRect()) });
     }
   }
 
   function handleMouseOut(e: MouseEvent<HTMLDivElement>) {
     const from = (e.target as HTMLElement).closest("mark[data-id]");
-    const to =
-      e.relatedTarget instanceof Element
-        ? e.relatedTarget.closest("mark[data-id]")
-        : null;
+    const to = e.relatedTarget instanceof Element ? e.relatedTarget.closest("mark[data-id]") : null;
     if (from && from !== to) setHover(null);
   }
 
@@ -238,32 +227,24 @@ export default function Reader({
     const el = bodyRef.current;
     if (!el) return;
     const selection = window.getSelection();
-    const range =
-      selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+    const range = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
 
     // 1. Plain click: on a saved highlight → open it; anywhere else → close
     if (!range || range.collapsed) {
-      const mark = (e.target as HTMLElement).closest<HTMLElement>(
-        "mark[data-id]",
-      );
-      if (mark && mark.dataset.id !== PENDING)
-        openExisting(mark.dataset.id!, mark.getBoundingClientRect());
+      const mark = (e.target as HTMLElement).closest<HTMLElement>("mark[data-id]");
+      if (mark && mark.dataset.id !== PENDING) openExisting(mark.dataset.id!, mark.getBoundingClientRect());
       else setPopover(null);
       return;
     }
 
     // 2. Selection touching a saved highlight → open that one, no duplicates
-    const saved = Array.from(
-      el.querySelectorAll<HTMLElement>("mark[data-id]"),
-    ).filter((m) => m.dataset.id !== PENDING);
+    const saved = Array.from(el.querySelectorAll<HTMLElement>("mark[data-id]")).filter(
+      (m) => m.dataset.id !== PENDING
+    );
     const overlapping = saved.find((m) => range.intersectsNode(m));
     if (overlapping) {
       selection!.removeAllRanges();
-      openExisting(
-        overlapping.dataset.id!,
-        overlapping.getBoundingClientRect(),
-        "Already highlighted",
-      );
+      openExisting(overlapping.dataset.id!, overlapping.getBoundingClientRect(), "Already highlighted");
       return;
     }
 
@@ -274,31 +255,26 @@ export default function Reader({
       return;
     }
     const rect = range.getBoundingClientRect();
-    selection!.removeAllRanges();
+    selection!.removeAllRanges(); // the pending highlight shows the selection instead
     setNoteDraft("");
-    setCollectionDraft(lastCollection); // pre-fill the last collection you used
+    setCollectionsDraft(lastCollections); // pre-fill the collections you used last
     setPopover({ mode: "new", anchor, editing: false, ...positionAbove(rect) });
   }
 
   // ---------- API calls ----------
-  async function createHighlight(note: string, collection: string) {
+  async function createHighlight(note: string, collectionNames: string[]) {
     if (popover?.mode !== "new") return;
     setSaving(true);
     try {
       const res = await fetch(`${API_URL}documents/${docId}/annotations`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...popover.anchor,
-          note: note.trim(),
-          collection: collection.trim(),
-        }),
+        body: JSON.stringify({ ...popover.anchor, note: note.trim(), collections: collectionNames }),
       });
       if (!res.ok) throw new Error();
-      if (collection.trim()) setLastCollection(collection.trim());
+      if (collectionNames.length) setLastCollections(collectionNames);
       setPopover(null);
-      setAnnotations(await fetchAnnotations(docId));
-      setCollections(await fetchCollections()); // a new collection may have been created
+      await refresh();
     } catch {
       alert("Couldn't save that highlight. Try again.");
     } finally {
@@ -306,31 +282,17 @@ export default function Reader({
     }
   }
 
-  async function updateAnnotation(
-    annotationId: string,
-    note: string,
-    collection: string,
-  ) {
+  async function updateAnnotation(annotationId: string, note: string, collectionNames: string[]) {
     setSaving(true);
     try {
-      const res = await fetch(
-        `${API_URL}documents/${docId}/annotations/${annotationId}`,
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            note: note.trim(),
-            collection: collection.trim(),
-          }),
-        },
-      );
+      const res = await fetch(`${API_URL}documents/${docId}/annotations/${annotationId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ note: note.trim(), collections: collectionNames }),
+      });
       if (!res.ok) throw new Error();
-      const updated: Annotation = await res.json();
-      setAnnotations((current) =>
-        current.map((a) => (a.annotationId === annotationId ? updated : a)),
-      );
-      if (collection.trim()) setLastCollection(collection.trim());
-      setCollections(await fetchCollections());
+      if (collectionNames.length) setLastCollections(collectionNames);
+      await refresh();
       return true;
     } catch {
       alert("Couldn't save your changes. Try again.");
@@ -343,12 +305,8 @@ export default function Reader({
   async function removeHighlight(annotationId: string) {
     setSaving(true);
     try {
-      await fetch(`${API_URL}documents/${docId}/annotations/${annotationId}`, {
-        method: "DELETE",
-      });
-      setAnnotations((current) =>
-        current.filter((a) => a.annotationId !== annotationId),
-      );
+      await fetch(`${API_URL}documents/${docId}/annotations/${annotationId}`, { method: "DELETE" });
+      setAnnotations((current) => current.filter((a) => a.annotationId !== annotationId));
       setPopover(null);
       if (listEditingId === annotationId) setListEditingId(null);
     } finally {
@@ -360,7 +318,7 @@ export default function Reader({
   function startListEdit(a: Annotation, focus: "note" | "collection") {
     setListEditingId(a.annotationId);
     setListNoteDraft(a.note);
-    setListCollectionDraft(a.collectionName ?? "");
+    setListCollectionsDraft(namesFor(a));
     setListFocus(focus);
   }
 
@@ -374,9 +332,7 @@ export default function Reader({
   if (loadError) {
     return (
       <div>
-        <button className="btn btn-ghost back" onClick={onBack}>
-          ← All articles
-        </button>
+        <button className="btn btn-ghost back" onClick={onBack}>← All articles</button>
         <p className="message message-error">Couldn't load this article.</p>
       </div>
     );
@@ -391,27 +347,19 @@ export default function Reader({
     );
   }
 
+  const openAnnotation =
+    popover?.mode === "edit" ? annotations.find((a) => a.annotationId === popover.annotationId) : undefined;
+
   // ---------- The reader ----------
   return (
     <article className="reader">
-      {/* Suggestions for every collection field on this page */}
-      <datalist id="collection-options">
-        {collections.map((c) => (
-          <option key={c.collectionId} value={c.name} />
-        ))}
-      </datalist>
-
-      <button className="btn btn-ghost back" onClick={onBack}>
-        ← All articles
-      </button>
+      <button className="btn btn-ghost back" onClick={onBack}>← All articles</button>
 
       <header className="reader-header">
         <div className="card-meta">
           <span>{hostname(doc.url)}</span>
           <span aria-hidden>·</span>
-          <a href={doc.url} target="_blank" rel="noreferrer">
-            View original ↗
-          </a>
+          <a href={doc.url} target="_blank" rel="noreferrer">View original ↗</a>
         </div>
         <h1 className="reader-title">{doc.title ?? doc.url}</h1>
         {doc.byline && <p className="byline">{doc.byline}</p>}
@@ -424,12 +372,10 @@ export default function Reader({
           <ul>
             {annotations.map((a) => {
               const editing = listEditingId === a.annotationId;
+              const names = namesFor(a);
               return (
                 <li key={a.annotationId}>
-                  <button
-                    className="note-quote"
-                    onClick={() => scrollToHighlight(a.annotationId)}
-                  >
+                  <button className="note-quote" onClick={() => scrollToHighlight(a.annotationId)}>
                     “{a.exact}”
                   </button>
 
@@ -442,29 +388,21 @@ export default function Reader({
                         onChange={(e) => setListNoteDraft(e.target.value)}
                         placeholder="Add a note…"
                       />
-                      <input
+                      <CollectionPicker
+                        values={listCollectionsDraft}
+                        onChange={setListCollectionsDraft}
+                        options={collections}
                         autoFocus={listFocus === "collection"}
-                        list="collection-options"
-                        value={listCollectionDraft}
-                        onChange={(e) => setListCollectionDraft(e.target.value)}
-                        placeholder="Collection (optional)"
                       />
                       <div className="note-editor-actions">
-                        <button
-                          className="btn btn-small btn-ghost"
-                          onClick={() => setListEditingId(null)}
-                        >
+                        <button className="btn btn-small btn-ghost" onClick={() => setListEditingId(null)}>
                           Cancel
                         </button>
                         <button
                           className="btn btn-small btn-primary"
                           disabled={saving}
                           onClick={async () => {
-                            const ok = await updateAnnotation(
-                              a.annotationId,
-                              listNoteDraft,
-                              listCollectionDraft,
-                            );
+                            const ok = await updateAnnotation(a.annotationId, listNoteDraft, listCollectionsDraft);
                             if (ok) setListEditingId(null);
                           }}
                         >
@@ -474,35 +412,29 @@ export default function Reader({
                     </div>
                   ) : (
                     <>
-                      {a.collectionName && (
-                        <button
-                          className="chip chip-button"
-                          onClick={() => startListEdit(a, "collection")}
-                          title="Change collection"
-                        >
-                          {a.collectionName}
-                        </button>
+                      {names.length > 0 && (
+                        <div className="chip-row">
+                          {names.map((n) => (
+                            <button
+                              key={n}
+                              className="chip chip-button"
+                              onClick={() => startListEdit(a, "collection")}
+                              title="Edit collections"
+                            >
+                              {n}
+                            </button>
+                          ))}
+                        </div>
                       )}
                       {a.note && <p className="note-text">{a.note}</p>}
                       <div className="note-actions">
-                        <button
-                          className="link-btn"
-                          onClick={() => startListEdit(a, "note")}
-                        >
+                        <button className="link-btn" onClick={() => startListEdit(a, "note")}>
                           {a.note ? "Edit note" : "Add note"}
                         </button>
-                        {!a.collectionName && (
-                          <button
-                            className="link-btn"
-                            onClick={() => startListEdit(a, "collection")}
-                          >
-                            Add to collection
-                          </button>
-                        )}
-                        <button
-                          className="link-btn link-danger"
-                          onClick={() => removeHighlight(a.annotationId)}
-                        >
+                        <button className="link-btn" onClick={() => startListEdit(a, "collection")}>
+                          {names.length ? "Edit collections" : "Add to collection"}
+                        </button>
+                        <button className="link-btn link-danger" onClick={() => removeHighlight(a.annotationId)}>
                           Remove
                         </button>
                       </div>
@@ -532,12 +464,13 @@ export default function Reader({
 
       {/* ---------- Hover preview ---------- */}
       {hover && !popover && (
-        <div
-          className="note-preview"
-          style={{ top: hover.top, left: hover.left }}
-        >
-          {hover.collection && (
-            <span className="chip chip-dark">{hover.collection}</span>
+        <div className="note-preview" style={{ top: hover.top, left: hover.left }}>
+          {hover.collections.length > 0 && (
+            <div className="preview-chips">
+              {hover.collections.map((n) => (
+                <span key={n} className="chip chip-dark">{n}</span>
+              ))}
+            </div>
           )}
           {hover.note && <div>{hover.note}</div>}
         </div>
@@ -553,10 +486,7 @@ export default function Reader({
             <div className="tooltip-toolbar">
               {popover.mode === "new" ? (
                 <>
-                  <button
-                    onClick={() => createHighlight("", "")}
-                    disabled={saving}
-                  >
+                  <button onClick={() => createHighlight("", [])} disabled={saving}>
                     <HighlighterIcon /> Highlight
                   </button>
                   <span className="tooltip-divider" />
@@ -564,25 +494,20 @@ export default function Reader({
                     <NoteIcon /> Note
                   </button>
                   <button onClick={() => openEditor("collection")}>
-                    <FolderIcon /> Collection
+                    <FolderIcon /> Collections
                   </button>
                 </>
               ) : (
                 <>
-                  {popover.notice && (
-                    <span className="tooltip-label">{popover.notice}</span>
-                  )}
+                  {popover.notice && <span className="tooltip-label">{popover.notice}</span>}
                   <button onClick={() => openEditor("note")}>
-                    <NoteIcon /> Edit
+                    <NoteIcon /> {openAnnotation?.note ? "Edit note" : "Note"}
                   </button>
                   <button onClick={() => openEditor("collection")}>
-                    <FolderIcon /> Collection
+                    <FolderIcon /> Collections
                   </button>
                   <span className="tooltip-divider" />
-                  <button
-                    onClick={() => removeHighlight(popover.annotationId)}
-                    disabled={saving}
-                  >
+                  <button onClick={() => removeHighlight(popover.annotationId)} disabled={saving}>
                     <TrashIcon /> Remove
                   </button>
                 </>
@@ -597,21 +522,15 @@ export default function Reader({
                 onChange={(e) => setNoteDraft(e.target.value)}
                 placeholder="Write a note…"
               />
-              <div className="tooltip-field">
-                <FolderIcon />
-                <input
-                  autoFocus={popover.editing === "collection"}
-                  list="collection-options"
-                  value={collectionDraft}
-                  onChange={(e) => setCollectionDraft(e.target.value)}
-                  placeholder="Collection (optional)"
-                />
-              </div>
+              <CollectionPicker
+                dark
+                values={collectionsDraft}
+                onChange={setCollectionsDraft}
+                options={collections}
+                autoFocus={popover.editing === "collection"}
+              />
               <div className="tooltip-editor-actions">
-                <button
-                  className="tooltip-text-btn"
-                  onClick={() => setPopover(null)}
-                >
+                <button className="tooltip-text-btn" onClick={() => setPopover(null)}>
                   Cancel
                 </button>
                 <button
@@ -619,23 +538,13 @@ export default function Reader({
                   disabled={saving}
                   onClick={async () => {
                     if (popover.mode === "new") {
-                      await createHighlight(noteDraft, collectionDraft);
-                    } else if (
-                      await updateAnnotation(
-                        popover.annotationId,
-                        noteDraft,
-                        collectionDraft,
-                      )
-                    ) {
+                      await createHighlight(noteDraft, collectionsDraft);
+                    } else if (await updateAnnotation(popover.annotationId, noteDraft, collectionsDraft)) {
                       setPopover(null);
                     }
                   }}
                 >
-                  {saving
-                    ? "Saving…"
-                    : popover.mode === "new"
-                      ? "Save highlight"
-                      : "Save"}
+                  {saving ? "Saving…" : popover.mode === "new" ? "Save highlight" : "Save"}
                 </button>
               </div>
             </div>
