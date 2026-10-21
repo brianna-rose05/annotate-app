@@ -1,27 +1,24 @@
 name: Deploy frontend
 
-# WHEN to run: on pushes to main that change frontend files,
-# or manually from the Actions tab
 on:
   push:
     branches: [main]
     paths: ["frontend/**"]
   workflow_dispatch:
 
-# Lets this workflow request the OIDC token from GitHub
 permissions:
   id-token: write
   contents: read
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest # a fresh Linux machine from GitHub
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: frontend
 
     steps:
-      # 1. Download your repo onto the machine
+      # 1. Download the repo
       - uses: actions/checkout@v4
 
       # 2. Install Node
@@ -31,19 +28,19 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      # 3. Install packages and build (same as you did locally)
+      # 3. Install, test, and build (ONE build, with the API URL)
       - run: npm ci
       - run: npm test
       - run: npm run build
         env:
           VITE_API_URL: ${{ vars.API_URL }}
 
-      # 4. Log in to AWS using OIDC (no stored keys)
+      # 4. Log in to AWS using OIDC
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: us-east-1
 
-      # 5. Upload and clear the cache (your same two commands)
+      # 5. Upload and clear the cache
       - run: aws s3 sync dist/ s3://${{ vars.S3_BUCKET }} --delete
       - run: aws cloudfront create-invalidation --distribution-id ${{ vars.CLOUDFRONT_DISTRIBUTION_ID }} --paths "/*"
