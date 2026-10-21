@@ -5,15 +5,45 @@ import { parseHTML } from "linkedom";
 const PORT = process.env.PORT || 3000;
 const SECRET = process.env.FETCHER_SECRET; // only callers who know this can use the service
 
+// Turn relative links/images ("x4.png") into full URLs on the original site
+function absolutizeUrls(html, baseUrl) {
+  const { document } = parseHTML(`<!doctype html><html><body>${html}</body></html>`);
+
+  for (const el of document.querySelectorAll("img[src], source[src]")) {
+    try {
+      el.setAttribute("src", new URL(el.getAttribute("src"), baseUrl).href);
+    } catch {}
+    el.removeAttribute("srcset");
+  }
+
+  for (const a of document.querySelectorAll("a[href]")) {
+    const href = a.getAttribute("href");
+    if (href.startsWith("#")) continue;
+    try {
+      a.setAttribute("href", new URL(href, baseUrl).href);
+    } catch {}
+  }
+
+  return document.body.innerHTML;
+}
+
 async function fetchArticle(url) {
   const res = await fetch(url, {
     headers: { "User-Agent": "Mozilla/5.0 (compatible; AnnotateApp/1.0)" },
     signal: AbortSignal.timeout(10000),
   });
   if (!res.ok) throw new Error(`Page returned ${res.status}`);
-  const { document } = parseHTML(await res.text());
+
+  const html = await res.text();
+  const { document } = parseHTML(html);
+
+  const baseHref = document.querySelector("base")?.getAttribute("href");
+  const baseUrl = baseHref ? new URL(baseHref, res.url).href : res.url;
+
   const article = new Readability(document).parse();
   if (!article) throw new Error("Couldn't find an article on that page");
+
+  article.content = absolutizeUrls(article.content, baseUrl);
   return article;
 }
 
@@ -40,4 +70,4 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => console.log(`Fetcher v2 listening on port ${PORT}`));
+server.listen(PORT, () => console.log(`Fetcher listening on port ${PORT}`));

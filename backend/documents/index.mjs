@@ -26,6 +26,28 @@ const json = (statusCode, data) => ({
   body: JSON.stringify(data),
 });
 
+// Turn relative links/images ("x4.png") into full URLs on the original site
+function absolutizeUrls(html, baseUrl) {
+  const { document } = parseHTML(`<!doctype html><html><body>${html}</body></html>`);
+
+  for (const el of document.querySelectorAll("img[src], source[src]")) {
+    try {
+      el.setAttribute("src", new URL(el.getAttribute("src"), baseUrl).href);
+    } catch {}
+    el.removeAttribute("srcset"); // alternate sizes can also be relative; src is enough
+  }
+
+  for (const a of document.querySelectorAll("a[href]")) {
+    const href = a.getAttribute("href");
+    if (href.startsWith("#")) continue; // keep links within the page
+    try {
+      a.setAttribute("href", new URL(href, baseUrl).href);
+    } catch {}
+  }
+
+  return document.body.innerHTML;
+}
+
 // Download a page and pull out just the article
 async function fetchArticle(url) {
   const res = await fetch(url, {
@@ -36,8 +58,16 @@ async function fetchArticle(url) {
 
   const html = await res.text();
   const { document } = parseHTML(html);
+
+  // Figure out what relative paths are relative TO:
+  // the page's <base> tag if it has one, otherwise the final URL after redirects
+  const baseHref = document.querySelector("base")?.getAttribute("href");
+  const baseUrl = baseHref ? new URL(baseHref, res.url).href : res.url;
+
   const article = new Readability(document).parse();
   if (!article) throw new Error("Couldn't find an article on that page");
+
+  article.content = absolutizeUrls(article.content, baseUrl);
   return article;
 }
 
