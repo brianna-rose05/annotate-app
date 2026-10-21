@@ -9,7 +9,7 @@ resource "aws_apigatewayv2_api" "main" {
       "https://${aws_cloudfront_distribution.frontend.domain_name}",
       "http://localhost:5173",
     ]
-        allow_methods = ["GET", "POST", "DELETE", "OPTIONS"]
+        allow_methods = ["GET", "POST", "DELETE", "OPTIONS", "PATCH"]
     allow_headers = ["content-type"]
   }
 }
@@ -99,5 +99,29 @@ resource "aws_apigatewayv2_route" "annotations_create" {
 resource "aws_apigatewayv2_route" "annotations_delete" {
   api_id    = aws_apigatewayv2_api.main.id
   route_key = "DELETE /documents/{docId}/annotations/{annotationId}"
+  target    = "integrations/${aws_apigatewayv2_integration.documents.id}"
+}
+
+resource "aws_apigatewayv2_route" "documents_delete" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "DELETE /documents/{docId}"
+  target    = "integrations/${aws_apigatewayv2_integration.documents.id}"
+}
+
+resource "aws_apigatewayv2_route" "annotations_update" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "PATCH /documents/{docId}/annotations/{annotationId}"
+  target    = "integrations/${aws_apigatewayv2_integration.documents.id}"
+}
+
+resource "aws_apigatewayv2_route" "collections_list" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "GET /collections"
+  target    = "integrations/${aws_apigatewayv2_integration.documents.id}"
+}
+
+resource "aws_apigatewayv2_route" "collection_highlights" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "GET /collections/{collectionId}/highlights"
   target    = "integrations/${aws_apigatewayv2_integration.documents.id}"
 }

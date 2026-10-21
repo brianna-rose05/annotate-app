@@ -39,14 +39,14 @@ data "aws_iam_policy_document" "ec2_trust" {
 # What the Lambda can do in DynamoDB: save and list, in this table only
 data "aws_iam_policy_document" "lambda_dynamodb" {
   statement {
-    actions   = ["dynamodb:PutItem", "dynamodb:Query", "dynamodb:GetItem", "dynamodb:DeleteItem"]
-    resources = [aws_dynamodb_table.documents.arn, aws_dynamodb_table.annotations.arn]
+    actions   = ["dynamodb:PutItem", "dynamodb:Query", "dynamodb:GetItem", "dynamodb:DeleteItem", "dynamodb:UpdateItem"]
+    resources = [aws_dynamodb_table.documents.arn, aws_dynamodb_table.annotations.arn, "${aws_dynamodb_table.annotations.arn}/index/*", aws_dynamodb_table.collections.arn]
   }
 }
 
 data "aws_iam_policy_document" "lambda_content" {
   statement {
-    actions   = ["s3:PutObject", "s3:GetObject"]
+    actions   = ["s3:PutObject", "s3:GetObject",  "s3:DeleteObject"]
     resources = ["${aws_s3_bucket.content.arn}/*"]
   }
 }
@@ -101,6 +101,7 @@ resource "aws_lambda_function" "documents" {
             TABLE_NAME        = aws_dynamodb_table.documents.name
             CONTENT_BUCKET    = aws_s3_bucket.content.id
             ANNOTATIONS_TABLE = aws_dynamodb_table.annotations.name
+            COLLECTIONS_TABLE = aws_dynamodb_table.collections.name
             FETCHER_URL       = var.fetcher_enabled ? "http://${aws_instance.fetcher[0].public_ip}:3000" : ""
             FETCHER_SECRET    = random_password.fetcher_secret.result
     }
