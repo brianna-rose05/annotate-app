@@ -64,7 +64,9 @@ async function fetchArticle(url) {
   const baseHref = document.querySelector("base")?.getAttribute("href");
   const baseUrl = baseHref ? new URL(baseHref, res.url).href : res.url;
 
-  const article = new Readability(document).parse();
+   const article = new Readability(document, {
+    classesToPreserve: ["ltx_tag_item"], // arXiv's hand-drawn bullets, so CSS can hide them
+  }).parse();
   if (!article) throw new Error("Couldn't find an article on that page");
 
   article.content = absolutizeUrls(article.content, baseUrl);

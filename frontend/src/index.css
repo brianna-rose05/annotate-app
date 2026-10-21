@@ -68,3 +68,9 @@ mark {
 .notes ul { list-style: none; padding: 0; margin: 0; }
 .notes li { margin-bottom: 12px; }
 .notes p { margin: 4px 0; }
+
+/* arXiv draws its own bullets; hide them and use the browser's */
+.article-body .ltx_tag_item { display: none; }
+
+/* Tighter spacing for paragraphs inside list items */
+.article-body li p { margin: 0.25em 0; }
