@@ -10,7 +10,7 @@ resource "aws_apigatewayv2_api" "main" {
       "http://localhost:5173",
     ]
         allow_methods = ["GET", "POST", "DELETE", "OPTIONS", "PATCH"]
-    allow_headers = ["content-type"]
+   allow_headers = ["content-type", "authorization"]
   }
 }
 
@@ -141,5 +141,16 @@ resource "aws_apigatewayv2_route" "collection_delete" {
 resource "aws_apigatewayv2_route" "collection_create" {
   api_id    = aws_apigatewayv2_api.main.id
   route_key = "POST /collections"
+  target    = "integrations/${aws_apigatewayv2_integration.documents.id}"
+}
+
+resource "aws_apigatewayv2_route" "snip_upload_url" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "POST /documents/{docId}/snips/upload-url"
+  target    = "integrations/${aws_apigatewayv2_integration.documents.id}"
+}
+resource "aws_apigatewayv2_route" "image_proxy" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "GET /image-proxy"
   target    = "integrations/${aws_apigatewayv2_integration.documents.id}"
 }

@@ -105,13 +105,13 @@ resource "aws_lambda_function" "documents" {
   handler          = "index.handler"
   filename         = data.archive_file.documents.output_path
   source_code_hash = data.archive_file.documents.output_base64sha256
-  timeout = 15
-  memory_size = 512 
+  timeout          = 25
+  memory_size      = 512
 
     environment {
         variables = {
-            TABLE_NAME        = aws_dynamodb_table.documents.name
-            CONTENT_BUCKET    = aws_s3_bucket.content.id
+            TABLE_NAME     = aws_dynamodb_table.documents.name
+            CONTENT_BUCKET = aws_s3_bucket.content.id
             ANNOTATIONS_TABLE = aws_dynamodb_table.annotations.name
             COLLECTIONS_TABLE = aws_dynamodb_table.collections.name
             COLLECTION_ITEMS_TABLE = aws_dynamodb_table.collection_items.name

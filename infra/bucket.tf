@@ -48,3 +48,18 @@ data "aws_iam_policy_document" "frontend" {
     }
   }
 }
+
+# Let the app's JavaScript download PDFs from the content bucket
+resource "aws_s3_bucket_cors_configuration" "content" {
+  bucket = aws_s3_bucket.content.id
+
+  cors_rule {
+    allowed_methods = ["GET", "HEAD", "PUT"]
+    allowed_origins = [
+      "https://${aws_cloudfront_distribution.frontend.domain_name}",
+      "http://localhost:5173",
+    ]
+    allowed_headers = ["*"]
+    max_age_seconds = 3600 # browsers can remember this answer for an hour
+  }
+}

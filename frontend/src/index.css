@@ -811,3 +811,206 @@ mark.flash { animation: flash 1.6s ease-out; }
   margin-bottom: 6px;
 }
 .preview-chips .chip-dark { margin: 0; }
+
+.page:has(.pdf-viewer) { max-width: 1000px; }
+/* ---------- PDF viewer ---------- */
+.pdf-wrap { position: relative; }
+
+/* Zoom controls stick to the top of the screen while you scroll */
+.pdf-toolbar {
+  position: sticky;
+  top: 12px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: max-content;
+  margin: 0 auto 16px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: var(--shadow);
+  font-size: 0.85rem;
+}
+.pdf-toolbar button {
+  all: unset;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  font-size: 1.1rem;
+  cursor: pointer;
+}
+.pdf-toolbar button:hover:not(:disabled) { background: var(--stripe); }
+.pdf-toolbar button:disabled { opacity: 0.35; cursor: default; }
+.pdf-toolbar span { min-width: 44px; text-align: center; color: var(--muted); }
+
+/* Full-bleed: the PDF area spans the whole window, so zoomed pages have room to grow */
+.pdf-viewer {
+  width: 100vw;
+  margin-left: calc(50% - 50vw); /* pull the left edge out to the window's edge */
+  overflow-x: auto;              /* only scroll sideways if the page is wider than the window */
+}
+body { overflow-x: clip; }       /* the full-width viewer shouldn't make the whole page scroll sideways */
+
+/* Pages are centered when they fit, and scroll from the left edge when they don't */
+.pdf-pages {
+  display: flex;
+  flex-direction: column;
+  width: max-content;
+  margin: 0 auto;
+}
+
+.pdf-page {
+  position: relative;
+  overflow: hidden; /* hides the trimmed margins */
+}
+.pdf-page + .pdf-page { border-top: 1px solid var(--border); }
+.pdf-page-inner { position: relative; }
+.pdf-page canvas { display: block; }
+
+/* Light mode: "multiply" turns the page's white into the app's background */
+.pdf-page canvas { mix-blend-mode: multiply; }
+
+/* Dark mode: white text on pure black, then "screen" turns the black into the app's background */
+@media (prefers-color-scheme: dark) {
+  .pdf-page canvas {
+    filter: invert(1) hue-rotate(180deg) brightness(0.9); /* brightness(0.9) = soft white text, not glaring */
+    mix-blend-mode: screen;
+  }
+}
+
+/* ---------- Highlights on PDF pages ---------- */
+/* See-through, so the page's own text shows underneath */
+.textLayer mark {
+  background: rgba(250, 204, 21, 0.45);
+  color: transparent;
+  border-radius: 0;
+  padding: 0;
+  cursor: pointer;
+}
+.textLayer mark:hover { background: rgba(250, 204, 21, 0.65); }
+.textLayer mark[data-id="pending"] {
+  background: rgba(124, 155, 255, 0.35);
+  box-shadow: none;
+}
+@media (prefers-color-scheme: dark) {
+  .textLayer mark { background: rgba(250, 204, 21, 0.3); }
+  .textLayer mark:hover { background: rgba(250, 204, 21, 0.45); }
+}
+/* ---------- Snips ---------- */
+.snip-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+.snip-bar .btn { cursor: pointer; }
+.snip-tip { font-size: 0.85rem; }
+
+/* Thumbnails in the highlights list and collections */
+.snip-thumb {
+  all: unset;
+  display: block;
+  padding-left: 12px;
+  border-left: 3px solid var(--accent);
+  cursor: zoom-in;
+}
+.snip-thumb img {
+  display: block;
+  max-width: 100%;
+  max-height: 220px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+/* The snip editor pop-up */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.5);
+}
+.modal {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 520px;
+  max-width: 100%;
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+.modal-title { margin: 0; font-size: 1.1rem; }
+.snip-preview {
+  max-width: 100%;
+  max-height: 300px;
+  object-fit: contain; /* show the whole image without stretching it */
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.modal textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.92rem;
+  resize: vertical;
+}
+.modal textarea:focus { outline: none; border-color: var(--accent); }
+.modal .picker { margin-top: 0; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 6px; }
+
+/* A snip shown full size */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.8);
+  cursor: zoom-out;
+}
+.lightbox img { max-width: 100%; max-height: 100%; border-radius: 8px; }
+
+/* ---------- Snip mode ---------- */
+.snip-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  cursor: crosshair;
+  background: rgba(0, 0, 0, 0.15); /* dims the screen so it's clear you're in snip mode */
+}
+.snip-box {
+  position: fixed;
+  border: 2px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-radius: 2px;
+  pointer-events: none;
+}
+.snip-hint {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: #1c1c1e;
+  color: #fff;
+  font-size: 0.85rem;
+  pointer-events: none;
+}

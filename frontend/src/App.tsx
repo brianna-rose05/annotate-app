@@ -1,8 +1,11 @@
 import { useEffect, useState } from "react";
 import Reader from "./Reader";
-import { CollectionsList, CollectionView, type Collection } from "./Collections";
-
-const API_URL = import.meta.env.VITE_API_URL;
+import {
+  CollectionsList,
+  CollectionView,
+  type Collection,
+} from "./Collections";
+import { apiFetch } from "./auth";
 
 type Doc = {
   docId: string;
@@ -45,25 +48,31 @@ export default function App() {
 
   // What's open right now
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [focusAnnotationId, setFocusAnnotationId] = useState<string | null>(null);
-  const [selectedCollection, setSelectedCollection] = useState<Collection | null>(null);
+  const [focusAnnotationId, setFocusAnnotationId] = useState<string | null>(
+    null,
+  );
+  const [selectedCollection, setSelectedCollection] =
+    useState<Collection | null>(null);
 
   async function loadDocs() {
     try {
-      const res = await fetch(`${API_URL}documents`);
+      const res = await apiFetch(`documents`);
       if (!res.ok) throw new Error();
       const data: Doc[] = await res.json();
       data.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
       setDocs(data);
     } catch {
-      setMessage({ type: "error", text: "Couldn't load your articles. Check your connection and refresh." });
+      setMessage({
+        type: "error",
+        text: "Couldn't load your articles. Check your connection and refresh.",
+      });
     } finally {
       setLoading(false);
     }
   }
 
   async function saveUrl(link: string): Promise<Doc> {
-    const res = await fetch(`${API_URL}documents`, {
+    const res = await apiFetch(`documents`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ url: link }),
@@ -82,7 +91,10 @@ export default function App() {
       if (doc.alreadySaved) {
         setMessage({ type: "info", text: `Already saved: “${doc.title}”` });
       } else if (doc.status === "failed") {
-        setMessage({ type: "error", text: `Saved the link, but couldn't fetch the article: ${doc.error}` });
+        setMessage({
+          type: "error",
+          text: `Saved the link, but couldn't fetch the article: ${doc.error}`,
+        });
       }
       await loadDocs();
     } catch (err) {
@@ -98,10 +110,13 @@ export default function App() {
     try {
       const saved = await saveUrl(doc.url);
       if (saved.docId !== doc.docId) {
-        await fetch(`${API_URL}documents/${doc.docId}`, { method: "DELETE" });
+        await apiFetch(`documents/${doc.docId}`, { method: "DELETE" });
       }
       if (saved.status === "failed") {
-        setMessage({ type: "error", text: `Still couldn't fetch it: ${saved.error}` });
+        setMessage({
+          type: "error",
+          text: `Still couldn't fetch it: ${saved.error}`,
+        });
       }
       await loadDocs();
     } catch (err) {
@@ -117,11 +132,16 @@ export default function App() {
 
     setBusyId(doc.docId);
     try {
-      const res = await fetch(`${API_URL}documents/${doc.docId}`, { method: "DELETE" });
+      const res = await apiFetch(`documents/${doc.docId}`, {
+        method: "DELETE",
+      });
       if (!res.ok && res.status !== 404) throw new Error();
       setDocs((current) => current.filter((d) => d.docId !== doc.docId));
     } catch {
-      setMessage({ type: "error", text: "Couldn't delete that article. Try again." });
+      setMessage({
+        type: "error",
+        text: "Couldn't delete that article. Try again.",
+      });
     } finally {
       setBusyId(null);
     }
@@ -159,7 +179,9 @@ export default function App() {
         <CollectionView
           collection={selectedCollection}
           onBack={() => setSelectedCollection(null)}
-          onOpenHighlight={(docId, annotationId) => openArticle(docId, annotationId)}
+          onOpenHighlight={(docId, annotationId) =>
+            openArticle(docId, annotationId)
+          }
           onRenamed={(updated) => setSelectedCollection(updated)}
           onDeleted={() => setSelectedCollection(null)}
         />
@@ -213,7 +235,11 @@ export default function App() {
               required
               disabled={saving}
             />
-            <button className="btn btn-primary" type="submit" disabled={saving || !url.trim()}>
+            <button
+              className="btn btn-primary"
+              type="submit"
+              disabled={saving || !url.trim()}
+            >
               {saving ? (
                 <>
                   <span className="spinner" /> Fetching…
@@ -224,7 +250,9 @@ export default function App() {
             </button>
           </form>
 
-          {message && <p className={`message message-${message.type}`}>{message.text}</p>}
+          {message && (
+            <p className={`message message-${message.type}`}>{message.text}</p>
+          )}
 
           <section className="doc-list">
             {loading ? (
@@ -232,7 +260,9 @@ export default function App() {
             ) : docs.length === 0 ? (
               <div className="empty">
                 <p className="empty-title">No articles yet</p>
-                <p className="muted">Paste a link above to save your first one.</p>
+                <p className="muted">
+                  Paste a link above to save your first one.
+                </p>
               </div>
             ) : (
               docs.map((doc) => {
@@ -253,14 +283,25 @@ export default function App() {
                     <h2 className="card-title">{doc.title ?? doc.url}</h2>
 
                     {failed ? (
-                      <p className="card-error">Couldn't fetch this article: {doc.error}</p>
+                      <p className="card-error">
+                        Couldn't fetch this article: {doc.error}
+                      </p>
                     ) : (
-                      doc.excerpt && <p className="card-excerpt">{doc.excerpt}</p>
+                      doc.excerpt && (
+                        <p className="card-excerpt">{doc.excerpt}</p>
+                      )
                     )}
 
-                    <div className="card-actions" onClick={(e) => e.stopPropagation()}>
+                    <div
+                      className="card-actions"
+                      onClick={(e) => e.stopPropagation()}
+                    >
                       {failed && (
-                        <button className="btn btn-small" onClick={() => handleRetry(doc)} disabled={busy}>
+                        <button
+                          className="btn btn-small"
+                          onClick={() => handleRetry(doc)}
+                          disabled={busy}
+                        >
                           {busy ? "Retrying…" : "Retry"}
                         </button>
                       )}

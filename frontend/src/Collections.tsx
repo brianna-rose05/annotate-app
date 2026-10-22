@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { apiFetch } from "./auth";
 
 const API_URL = import.meta.env.VITE_API_URL;
 
@@ -11,17 +12,31 @@ type CollectionHighlight = {
   exact: string;
   note: string;
   createdAt: string;
+  kind?: "text" | "area";
+  imageUrl?: string;
 };
 
 const FolderIcon = () => (
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+  <svg
+    width="20"
+    height="20"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
     <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
   </svg>
 );
 
 // ---------- The grid of collections ----------
-export function CollectionsList({ onOpen }: { onOpen: (c: Collection) => void }) {
+export function CollectionsList({
+  onOpen,
+}: {
+  onOpen: (c: Collection) => void;
+}) {
   const [collections, setCollections] = useState<Collection[] | null>(null);
   const [error, setError] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -30,7 +45,7 @@ export function CollectionsList({ onOpen }: { onOpen: (c: Collection) => void })
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    fetch(`${API_URL}collections`)
+    apiFetch(`collections`)
       .then((res) => {
         if (!res.ok) throw new Error();
         return res.json();
@@ -46,15 +61,16 @@ export function CollectionsList({ onOpen }: { onOpen: (c: Collection) => void })
     setBusy(true);
     setCreateError("");
     try {
-      const res = await fetch(`${API_URL}collections`, {
+      const res = await apiFetch(`collections`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Couldn't create that collection.");
+      if (!res.ok)
+        throw new Error(data.error || "Couldn't create that collection.");
       setCollections((current) =>
-        [...(current ?? []), data].sort((a, b) => a.name.localeCompare(b.name))
+        [...(current ?? []), data].sort((a, b) => a.name.localeCompare(b.name)),
       );
       setNewName("");
       setCreating(false);
@@ -65,7 +81,10 @@ export function CollectionsList({ onOpen }: { onOpen: (c: Collection) => void })
     }
   }
 
-  if (error) return <p className="message message-error">Couldn't load your collections.</p>;
+  if (error)
+    return (
+      <p className="message message-error">Couldn't load your collections.</p>
+    );
 
   const toolbar = (
     <div className="collections-toolbar">
@@ -83,7 +102,11 @@ export function CollectionsList({ onOpen }: { onOpen: (c: Collection) => void })
             onChange={(e) => setNewName(e.target.value)}
             placeholder="Collection name"
           />
-          <button className="btn btn-small btn-primary" type="submit" disabled={busy || !newName.trim()}>
+          <button
+            className="btn btn-small btn-primary"
+            type="submit"
+            disabled={busy || !newName.trim()}
+          >
             {busy ? "Creating…" : "Create"}
           </button>
           <button
@@ -110,7 +133,9 @@ export function CollectionsList({ onOpen }: { onOpen: (c: Collection) => void })
   if (!collections) {
     return (
       <div className="collection-grid">
-        {[1, 2, 3].map((n) => <div key={n} className="collection-card skeleton" />)}
+        {[1, 2, 3].map((n) => (
+          <div key={n} className="collection-card skeleton" />
+        ))}
       </div>
     );
   }
@@ -121,12 +146,18 @@ export function CollectionsList({ onOpen }: { onOpen: (c: Collection) => void })
       {collections.length === 0 ? (
         <div className="empty">
           <p className="empty-title">No collections yet</p>
-          <p className="muted">Create one above, or add a highlight to a collection while you read.</p>
+          <p className="muted">
+            Create one above, or add a highlight to a collection while you read.
+          </p>
         </div>
       ) : (
         <div className="collection-grid">
           {collections.map((c) => (
-            <button key={c.collectionId} className="collection-card" onClick={() => onOpen(c)}>
+            <button
+              key={c.collectionId}
+              className="collection-card"
+              onClick={() => onOpen(c)}
+            >
               <FolderIcon />
               <span className="collection-name">{c.name}</span>
             </button>
@@ -150,7 +181,9 @@ export function CollectionView({
   onRenamed: (updated: Collection) => void;
   onDeleted: () => void;
 }) {
-  const [highlights, setHighlights] = useState<CollectionHighlight[] | null>(null);
+  const [highlights, setHighlights] = useState<CollectionHighlight[] | null>(
+    null,
+  );
   const [error, setError] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
@@ -158,7 +191,7 @@ export function CollectionView({
   const [actionError, setActionError] = useState("");
 
   useEffect(() => {
-    fetch(`${API_URL}collections/${collection.collectionId}/highlights`)
+    apiFetch(`collections/${collection.collectionId}/highlights`)
       .then((res) => {
         if (!res.ok) throw new Error();
         return res.json();
@@ -177,13 +210,17 @@ export function CollectionView({
     setBusy(true);
     setActionError("");
     try {
-      const res = await fetch(`${API_URL}collections/${collection.collectionId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name }),
-      });
+      const res = await fetch(
+        `${API_URL}collections/${collection.collectionId}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        },
+      );
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Couldn't rename this collection.");
+      if (!res.ok)
+        throw new Error(data.error || "Couldn't rename this collection.");
       onRenamed({ ...collection, name: data.name });
       setRenaming(false);
     } catch (err) {
@@ -196,13 +233,16 @@ export function CollectionView({
   // DELETE /collections/{id}
   async function remove() {
     const ok = window.confirm(
-      `Delete the collection “${collection.name}”?\n\nYour highlights and notes will stay on their articles. They just won't be in this collection anymore.`
+      `Delete the collection “${collection.name}”?\n\nYour highlights and notes will stay on their articles. They just won't be in this collection anymore.`,
     );
     if (!ok) return;
     setBusy(true);
     setActionError("");
     try {
-      const res = await fetch(`${API_URL}collections/${collection.collectionId}`, { method: "DELETE" });
+      const res = await fetch(
+        `${API_URL}collections/${collection.collectionId}`,
+        { method: "DELETE" },
+      );
       if (!res.ok) throw new Error();
       onDeleted();
     } catch {
@@ -212,11 +252,19 @@ export function CollectionView({
   }
 
   // Group highlights by article, keeping newest-first order
-  const groups: { docId: string; docTitle: string; items: CollectionHighlight[] }[] = [];
+  const groups: {
+    docId: string;
+    docTitle: string;
+    items: CollectionHighlight[];
+  }[] = [];
   for (const h of highlights ?? []) {
     let group = groups.find((g) => g.docId === h.docId);
     if (!group) {
-      group = { docId: h.docId, docTitle: h.docTitle ?? "Untitled article", items: [] };
+      group = {
+        docId: h.docId,
+        docTitle: h.docTitle ?? "Untitled article",
+        items: [],
+      };
       groups.push(group);
     }
     group.items.push(h);
@@ -224,7 +272,9 @@ export function CollectionView({
 
   return (
     <div>
-      <button className="btn btn-ghost back" onClick={onBack}>← All collections</button>
+      <button className="btn btn-ghost back" onClick={onBack}>
+        ← All collections
+      </button>
 
       <header className="reader-header">
         <p className="eyebrow">Collection</p>
@@ -237,11 +287,23 @@ export function CollectionView({
               rename();
             }}
           >
-            <input autoFocus value={nameDraft} onChange={(e) => setNameDraft(e.target.value)} />
-            <button className="btn btn-small btn-primary" type="submit" disabled={busy}>
+            <input
+              autoFocus
+              value={nameDraft}
+              onChange={(e) => setNameDraft(e.target.value)}
+            />
+            <button
+              className="btn btn-small btn-primary"
+              type="submit"
+              disabled={busy}
+            >
               {busy ? "Saving…" : "Save"}
             </button>
-            <button className="btn btn-small btn-ghost" type="button" onClick={() => setRenaming(false)}>
+            <button
+              className="btn btn-small btn-ghost"
+              type="button"
+              onClick={() => setRenaming(false)}
+            >
               Cancel
             </button>
           </form>
@@ -259,7 +321,11 @@ export function CollectionView({
               >
                 Rename
               </button>
-              <button className="link-btn link-danger" onClick={remove} disabled={busy}>
+              <button
+                className="link-btn link-danger"
+                onClick={remove}
+                disabled={busy}
+              >
                 Delete
               </button>
             </div>
@@ -270,20 +336,25 @@ export function CollectionView({
 
         {highlights && (
           <p className="muted">
-            {highlights.length} highlight{highlights.length === 1 ? "" : "s"} from {groups.length} article
+            {highlights.length} highlight{highlights.length === 1 ? "" : "s"}{" "}
+            from {groups.length} article
             {groups.length === 1 ? "" : "s"}
           </p>
         )}
       </header>
 
-      {error && <p className="message message-error">Couldn't load this collection.</p>}
+      {error && (
+        <p className="message message-error">Couldn't load this collection.</p>
+      )}
 
       {!highlights && !error && <div className="skeleton skeleton-block" />}
 
       {highlights?.length === 0 && (
         <div className="empty">
           <p className="empty-title">Nothing here yet</p>
-          <p className="muted">Highlights you add to “{collection.name}” will show up here.</p>
+          <p className="muted">
+            Highlights you add to “{collection.name}” will show up here.
+          </p>
         </div>
       )}
 
@@ -293,8 +364,25 @@ export function CollectionView({
           <ul>
             {g.items.map((h) => (
               <li key={h.annotationId}>
-                <button className="note-quote" onClick={() => onOpenHighlight(g.docId, h.annotationId)}>
-                  “{h.exact}”
+                <button
+                  className="note-quote"
+                  onClick={() => onOpenHighlight(g.docId, h.annotationId)}
+                >
+                  {h.kind === "area" && h.imageUrl ? (
+                    <button
+                      className="snip-thumb"
+                      onClick={() => onOpenHighlight(g.docId, h.annotationId)}
+                    >
+                      <img src={h.imageUrl} alt="Saved snip" />
+                    </button>
+                  ) : (
+                    <button
+                      className="note-quote"
+                      onClick={() => onOpenHighlight(g.docId, h.annotationId)}
+                    >
+                      “{h.exact}”
+                    </button>
+                  )}
                 </button>
                 {h.note && <p className="note-text">{h.note}</p>}
               </li>
