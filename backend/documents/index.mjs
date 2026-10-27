@@ -32,7 +32,10 @@ const COLLECTIONS_TABLE = process.env.COLLECTIONS_TABLE;
 const COLLECTION_ITEMS_TABLE = process.env.COLLECTION_ITEMS_TABLE;
 const FETCHER_URL = process.env.FETCHER_URL;
 const FETCHER_SECRET = process.env.FETCHER_SECRET;
-const USER_ID = "brianna"; // placeholder until login is added
+const LEGACY_OWNER_SUB = "4498f438-80c1-7011-ab5b-affb6371d0e8";
+let USER_ID; 
+
+
 
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024; // Lambda responses max out at 6MB, and base64 adds ~33%
 
@@ -418,7 +421,12 @@ async function getArticle(url) {
 
 
 export const handler = async (event) => {
-    if (event.routeKey === "GET /image-proxy") {
+  // API Gateway already verified the token; read who it belongs to
+  const sub = event.requestContext?.authorizer?.jwt?.claims?.sub;
+  if (!sub) return { statusCode: 401, body: JSON.stringify({ error: "Not signed in" }) };
+  USER_ID = sub === LEGACY_OWNER_SUB ? "brianna" : sub;
+
+  if (event.routeKey === "GET /image-proxy") {
     const src = event.queryStringParameters?.src;
     if (!src) return { statusCode: 400, body: JSON.stringify({ error: "Missing src" }) };
     try {
@@ -427,6 +435,7 @@ export const handler = async (event) => {
       return { statusCode: 400, body: JSON.stringify({ error: err.message }) };
     }
   }
+
   switch (event.routeKey) {
 
     // ---------- DOCUMENTS ----------
