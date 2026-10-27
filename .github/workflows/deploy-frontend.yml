@@ -34,6 +34,9 @@ jobs:
       - run: npm run build
         env:
           VITE_API_URL: ${{ vars.API_URL }}
+          VITE_COGNITO_AUTHORITY: ${{ vars.COGNITO_AUTHORITY }}
+          VITE_COGNITO_CLIENT_ID: ${{ vars.COGNITO_CLIENT_ID }}
+          VITE_COGNITO_DOMAIN: ${{ vars.COGNITO_DOMAIN }}
 
       # 4. Log in to AWS using OIDC
       - uses: aws-actions/configure-aws-credentials@v4
