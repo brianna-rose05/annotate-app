@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties, type MouseEvent } from
 import * as pdfjsLib from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import "pdfjs-dist/web/pdf_viewer.css"; // PDF.js's own styles for the text layer
-import { applyHighlight, getSelectionAnchor, type Anchor } from "./highlight";
+import { applyHighlight, getSelectionAnchor, markClass, type Anchor } from "./highlight";
 
 // PDF.js does its heavy work in a background "worker" so the page doesn't freeze
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
@@ -35,7 +35,7 @@ function saveZoom(zoom: number) {
 }
 
 type PageSize = { number: number; width: number; height: number }; // at scale 1
-type PdfAnnotation = Anchor & { annotationId: string; page?: number };
+type PdfAnnotation = Anchor & { annotationId: string; page?: number; note?: string };
 
 // Draw one page: the picture (canvas) + the invisible, selectable text layer on top
 async function renderPage(pdf: pdfjsLib.PDFDocumentProxy, number: number, el: HTMLDivElement, scale: number) {
@@ -182,7 +182,7 @@ export default function PdfViewer({
       for (const a of annotations) {
         if (placed.has(a.annotationId)) continue;
         if (a.page !== undefined && a.page !== number) continue;
-        if (applyHighlight(layer, a, a.annotationId)) placed.add(a.annotationId);
+        if (applyHighlight(layer, a, a.annotationId, markClass(a))) placed.add(a.annotationId);
       }
       if (pendingAnchor && pendingPage === number) applyHighlight(layer, pendingAnchor, PENDING);
     }

@@ -16,6 +16,8 @@ import { getDocumentProxy, extractText } from "unpdf";
 import { randomUUID, createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import net from "node:net";
+import { normalizeUrl } from "./normalizeUrl.mjs";
+import { fixArticleUrls } from "./articleUrls.mjs";
 
 // removeUndefinedValues: skip fields that are undefined (e.g. pdfKey for web pages)
 // instead of throwing an error
@@ -33,6 +35,7 @@ const COLLECTION_ITEMS_TABLE = process.env.COLLECTION_ITEMS_TABLE;
 const FETCHER_URL = process.env.FETCHER_URL;
 const FETCHER_SECRET = process.env.FETCHER_SECRET;
 const LEGACY_OWNER_SUB = "4498f438-80c1-7011-ab5b-affb6371d0e8";
+const DEMO_SUB = "34a8e4b8-c071-70f9-5413-db7ec45277fe"; // brianna.pischke+demo@gmail.com: read-only
 let USER_ID; 
 
 
@@ -114,6 +117,32 @@ const json = (statusCode, data) => ({
 // Same URL → same ID, so saving a link twice doesn't create a duplicate
 function docIdFor(url) {
   return createHash("sha256").update(url).digest("hex").slice(0, 32);
+}
+
+// Titles count as the same if they only differ in capitals or spacing
+function titleKey(title) {
+  return (title ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+// A saved article with the same title, other than `exceptDocId` (null if none)
+async function findByTitle(title, exceptDocId) {
+  const key = titleKey(title);
+  if (!key) return null;
+  let lastKey;
+  do {
+    const { Items, LastEvaluatedKey } = await db.send(new QueryCommand({
+      TableName: TABLE,
+      KeyConditionExpression: "userId = :u",
+      ExpressionAttributeValues: { ":u": USER_ID },
+      ExclusiveStartKey: lastKey,
+    }));
+    const match = Items.find(
+      (d) => d.docId !== exceptDocId && d.status !== "failed" && titleKey(d.title) === key
+    );
+    if (match) return match;
+    lastKey = LastEvaluatedKey;
+  } while (lastKey);
+  return null;
 }
 
 // "AI & Skill Loss" → "ai-skill-loss" (safe to use in a URL)
@@ -265,21 +294,7 @@ async function collectionHighlights(collectionId) {
 function absolutizeUrls(html, baseUrl) {
   const { document } = parseHTML(`<!doctype html><html><body>${html}</body></html>`);
 
-  for (const el of document.querySelectorAll("img[src], source[src]")) {
-    try {
-      el.setAttribute("src", new URL(el.getAttribute("src"), baseUrl).href);
-    } catch {}
-    el.removeAttribute("srcset");
-  }
-
-  for (const a of document.querySelectorAll("a[href]")) {
-    const href = a.getAttribute("href");
-    if (href.startsWith("#")) continue;
-    try {
-      a.setAttribute("href", new URL(href, baseUrl).href);
-    } catch {}
-  }
-
+  fixArticleUrls(document.body, baseUrl);
   return document.body.innerHTML;
 }
 
@@ -410,7 +425,8 @@ async function getArticle(url) {
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || `Fetcher returned ${res.status}`);
-  return { ...data, format: "html" };
+  // The fetcher resolves src but not srcset, so finish the job here
+  return { ...data, content: absolutizeUrls(data.content, url), format: "html" };
 }
 
 
@@ -425,6 +441,11 @@ export const handler = async (event) => {
   const sub = event.requestContext?.authorizer?.jwt?.claims?.sub;
   if (!sub) return { statusCode: 401, body: JSON.stringify({ error: "Not signed in" }) };
   USER_ID = sub === LEGACY_OWNER_SUB ? "brianna" : sub;
+
+  // The demo account can look around but not change anything
+  if (sub === DEMO_SUB && event.requestContext.http.method !== "GET") {
+    return json(403, { error: "The demo account is read-only. Sign up to save your own articles." });
+  }
 
   if (event.routeKey === "GET /image-proxy") {
     const src = event.queryStringParameters?.src;
@@ -445,25 +466,24 @@ export const handler = async (event) => {
       const { url: rawUrl } = JSON.parse(event.body || "{}");
       if (!rawUrl) return json(400, { error: "url is required" });
 
-      // Clean up the URL so tiny differences (like #section) don't count as different links
-      let url;
+      // Clean up the URL so different links to the same article (tracking params, #section,
+      // arXiv abs vs. pdf…) don't count as different articles
       try {
-        const parsed = new URL(rawUrl.trim());
-        parsed.hash = "";
-        url = parsed.href;
+        new URL(rawUrl.trim());
       } catch {
         return json(400, { error: "That doesn't look like a valid link" });
       }
+      const url = normalizeUrl(rawUrl);
 
       const docId = docIdFor(url);
 
-      // Already saved successfully? Return the existing one.
+      // Already saved (and not a failed attempt)? Return the existing one.
       const { Item: existing } = await db.send(new GetCommand({
         TableName: TABLE,
         Key: { userId: USER_ID, docId },
       }));
-      if (existing?.status === "ready") {
-        return json(200, { ...existing, alreadySaved: true });
+      if (existing && existing.status !== "failed") {
+        return json(200, { ...existing, alreadySaved: true, duplicate: true });
       }
 
       // New, or a previous attempt failed: fetch it (this doubles as a retry)
@@ -476,6 +496,13 @@ export const handler = async (event) => {
 
       try {
         const article = await getArticle(url);
+
+        // Backup check: the same article saved from a link that normalizes differently
+        const sameTitle = await findByTitle(article.title, docId);
+        if (sameTitle) {
+          return json(200, { ...sameTitle, alreadySaved: true, duplicate: true });
+        }
+
         const contentKey = `${USER_ID}/${docId}.html`;
 
         // 1. Save the readable text version

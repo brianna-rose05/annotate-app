@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
-import { findPosition, applyHighlight } from "./highlight";
+import { findPosition, applyHighlight, markClass } from "./highlight";
 
 describe("findPosition", () => {
   it("finds text that appears once", () => {
@@ -55,5 +55,25 @@ describe("applyHighlight", () => {
     applyHighlight(container, { exact: "quick", prefix: "", suffix: "" }, "a3");
 
     expect(container.textContent).toBe("The quick brown fox");
+  });
+});
+describe("notes are drawn as underlines", () => {
+  it("markClass gives highlights with a note the has-note class", () => {
+    expect(markClass({ note: "why this matters" })).toBe("has-note");
+    expect(markClass({ note: "  " })).toBeUndefined();
+    expect(markClass({ note: "" })).toBeUndefined();
+    expect(markClass({})).toBeUndefined();
+  });
+
+  it("applyHighlight puts the class on every piece of the mark", () => {
+    const el = document.createElement("div");
+    el.innerHTML = "<p>The quick <b>brown</b> fox</p>";
+    applyHighlight(el, { exact: "quick brown fox", prefix: "The ", suffix: "" }, "a1", "has-note");
+    const marks = el.querySelectorAll('mark[data-id="a1"]');
+    expect(marks.length).toBeGreaterThan(1);
+    marks.forEach((m) => expect(m.className).toBe("has-note"));
+
+    applyHighlight(el, { exact: "The", prefix: "", suffix: " quick" }, "a2");
+    expect(el.querySelector('mark[data-id="a2"]')!.className).toBe("");
   });
 });

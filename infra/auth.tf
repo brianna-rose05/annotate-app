@@ -32,6 +32,19 @@ resource "random_string" "auth_domain" {
 resource "aws_cognito_user_pool_domain" "main" {
   domain       = "${local.project}-${random_string.auth_domain.result}"
   user_pool_id = aws_cognito_user_pool.main.id
+  managed_login_version = 2
+}
+
+# Look of the sign-in page (starts with Cognito's clean defaults)
+resource "aws_cognito_managed_login_branding" "web" {
+  user_pool_id                = aws_cognito_user_pool.main.id
+  client_id                   = aws_cognito_user_pool_client.web.id
+  use_cognito_provided_values = true
+
+  # Colors and logo are set in the AWS console's visual editor, so Terraform shouldn't undo them
+  lifecycle {
+    ignore_changes = [settings, asset, use_cognito_provided_values]
+  }
 }
 
 # 3. The app client: registers your website with the user pool

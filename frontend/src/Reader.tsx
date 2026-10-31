@@ -7,18 +7,24 @@ import {
   type MouseEvent,
 } from "react";
 import DOMPurify from "dompurify";
-import { applyHighlight, getSelectionAnchor, type Anchor } from "./highlight";
+import {
+  applyHighlight,
+  getSelectionAnchor,
+  markClass,
+  type Anchor,
+} from "./highlight";
 import CollectionPicker from "./CollectionPicker";
 import SnipEditor from "./SnipEditor";
 import SnipOverlay from "./SnipOverlay";
 import { snipHtml, snipPdf, type Box } from "./snip";
-import { apiFetch } from "./auth";
+import { apiFetch, errorMessage } from "./auth";
+import { fixArticleUrls } from "../../backend/documents/articleUrls.mjs";
 
 // PDF.js is large, so only download it when someone actually opens a PDF
 const PdfViewer = lazy(() => import("./PdfViewer"));
 
-const API_URL = import.meta.env.VITE_API_URL;
 const PENDING = "pending"; // id for the temporary highlight shown while the tooltip is open
+const HIGHLIGHTS_PREVIEW = 5; // how many highlights the list shows before "Show all"
 
 type FullDoc = {
   docId: string;
@@ -189,8 +195,11 @@ export default function Reader({
   const [snipMode, setSnipMode] = useState(false); // dragging a snip box right now
   const [lightbox, setLightbox] = useState<string | null>(null); // a snip shown full size
   const [saving, setSaving] = useState(false);
+  const [showAllHighlights, setShowAllHighlights] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
   const scrolledToFocus = useRef(false); // only jump to a highlight once, not on every redraw
+  const snipBarRef = useRef<HTMLDivElement>(null);
+  const [snipBarVisible, setSnipBarVisible] = useState(true); // false = show the floating Snip button
 
   const pendingAnchor = popover?.mode === "new" ? popover.anchor : null;
 
@@ -226,10 +235,17 @@ export default function Reader({
   useEffect(() => {
     const el = bodyRef.current;
     if (!el || !doc?.content || doc.pdfUrl) return;
-    el.innerHTML = DOMPurify.sanitize(doc.content);
+    // Point relative images/links at the original site (older saves still have them). This
+    // happens in an inactive document so images don't start loading from the wrong address.
+    const draft = new DOMParser().parseFromString(
+      DOMPurify.sanitize(doc.content),
+      "text/html",
+    );
+    fixArticleUrls(draft.body, doc.url);
+    el.innerHTML = draft.body.innerHTML;
     removeDuplicateListMarkers(el);
     for (const a of annotations) {
-      if (a.kind !== "area") applyHighlight(el, a, a.annotationId);
+      if (a.kind !== "area") applyHighlight(el, a, a.annotationId, markClass(a));
     }
     if (pendingAnchor) applyHighlight(el, pendingAnchor, PENDING);
 
@@ -247,6 +263,17 @@ export default function Reader({
       }
     }
   }, [doc, annotations, pendingAnchor, focusAnnotationId]);
+
+  // Once the Snip link at the top scrolls away, a floating Snip button takes over
+  useEffect(() => {
+    const bar = snipBarRef.current;
+    if (!bar) return;
+    const observer = new IntersectionObserver(([entry]) =>
+      setSnipBarVisible(entry.isIntersecting),
+    );
+    observer.observe(bar);
+    return () => observer.disconnect();
+  }, [doc]);
 
   // Escape closes the tooltip and the full-size image
   useEffect(() => {
@@ -302,6 +329,32 @@ export default function Reader({
     if (popover) setPopover({ ...popover, editing: focus });
   }
 
+  // Clicking away from the open editor keeps what you entered (Escape or Cancel still discard)
+  function dismissPopover() {
+    if (saving) return; // already saving; it closes itself when done
+    if (popover?.editing) {
+      if (popover.mode === "new" && (noteDraft.trim() || collectionsDraft.length)) {
+        createHighlight(noteDraft, collectionsDraft);
+        return;
+      }
+      if (popover.mode === "edit") {
+        const existing = annotations.find((a) => a.annotationId === popover.annotationId);
+        const lower = (names: string[]) => names.map((n) => n.toLowerCase()).sort().join("\n");
+        const changed =
+          noteDraft.trim() !== (existing?.note ?? "").trim() ||
+          lower(collectionsDraft) !== lower(namesFor(existing));
+        if (changed) {
+          const { annotationId } = popover;
+          updateAnnotation(annotationId, noteDraft, collectionsDraft).then((ok) => {
+            if (ok) setPopover(null);
+          });
+          return;
+        }
+      }
+    }
+    setPopover(null);
+  }
+
   // ---------- Hover preview ----------
   function handleMouseOver(e: MouseEvent<HTMLDivElement>) {
     if (popover) return;
@@ -345,7 +398,7 @@ export default function Reader({
       );
       if (mark && mark.dataset.id !== PENDING)
         openExisting(mark.dataset.id!, mark.getBoundingClientRect());
-      else setPopover(null);
+      else dismissPopover();
       return;
     }
 
@@ -392,12 +445,17 @@ export default function Reader({
           collections: collectionNames,
         }),
       });
-      if (!res.ok) throw new Error();
+      if (!res.ok)
+        throw new Error(
+          await errorMessage(res, "Couldn't save that highlight. Try again."),
+        );
       if (collectionNames.length) setLastCollections(collectionNames);
       setPopover(null);
       await refresh();
-    } catch {
-      alert("Couldn't save that highlight. Try again.");
+    } catch (err) {
+      alert(
+        (err as Error).message || "Couldn't save that highlight. Try again.",
+      );
     } finally {
       setSaving(false);
     }
@@ -410,8 +468,8 @@ export default function Reader({
   ) {
     setSaving(true);
     try {
-      const res = await fetch(
-        `${API_URL}documents/${docId}/annotations/${annotationId}`,
+      const res = await apiFetch(
+        `documents/${docId}/annotations/${annotationId}`,
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -421,12 +479,15 @@ export default function Reader({
           }),
         },
       );
-      if (!res.ok) throw new Error();
+      if (!res.ok)
+        throw new Error(
+          await errorMessage(res, "Couldn't save your changes. Try again."),
+        );
       if (collectionNames.length) setLastCollections(collectionNames);
       await refresh();
       return true;
-    } catch {
-      alert("Couldn't save your changes. Try again.");
+    } catch (err) {
+      alert((err as Error).message || "Couldn't save your changes. Try again.");
       return false;
     } finally {
       setSaving(false);
@@ -436,9 +497,14 @@ export default function Reader({
   async function removeHighlight(annotationId: string) {
     setSaving(true);
     try {
-      await apiFetch(`documents/${docId}/annotations/${annotationId}`, {
-        method: "DELETE",
-      });
+      const res = await apiFetch(
+        `documents/${docId}/annotations/${annotationId}`,
+        { method: "DELETE" },
+      );
+      if (res.status === 403) {
+        alert(await errorMessage(res, "Couldn't remove that highlight."));
+        return;
+      }
       setAnnotations((current) =>
         current.filter((a) => a.annotationId !== annotationId),
       );
@@ -497,7 +563,7 @@ export default function Reader({
   if (loadError) {
     return (
       <div>
-        <button className="btn btn-ghost back" onClick={onBack}>
+        <button className="link-btn back" onClick={onBack}>
           ← All articles
         </button>
         <p className="message message-error">Couldn't load this article.</p>
@@ -537,25 +603,24 @@ export default function Reader({
         }
       }}
     >
-      <button className="btn btn-ghost back" onClick={onBack}>
+      <button className="link-btn back" onClick={onBack}>
         ← All articles
       </button>
 
       <header className="reader-header">
-        <div className="card-meta">
-          <span>{hostname(doc.url)}</span>
-          <span aria-hidden>·</span>
+        <p className="meta">
+          {hostname(doc.url)} ·{" "}
           <a href={doc.url} target="_blank" rel="noreferrer">
             View original ↗
           </a>
-        </div>
+        </p>
         <h1 className="reader-title">{doc.title ?? doc.url}</h1>
         {doc.byline && <p className="byline">{doc.byline}</p>}
       </header>
 
       {/* ---------- Snip tool ---------- */}
-      <div className="snip-bar">
-        <button className="btn btn-small" onClick={() => setSnipMode(true)}>
+      <div className="snip-bar" ref={snipBarRef}>
+        <button className="link-btn snip-btn" onClick={() => setSnipMode(true)}>
           <ScissorsIcon /> Snip
         </button>
         <span className="muted snip-tip">
@@ -568,7 +633,10 @@ export default function Reader({
         <details className="notes" open>
           <summary>Highlights ({annotations.length})</summary>
           <ul>
-            {annotations.map((a) => {
+            {(showAllHighlights
+              ? annotations
+              : annotations.slice(0, HIGHLIGHTS_PREVIEW)
+            ).map((a) => {
               const editing = listEditingId === a.annotationId;
               const names = namesFor(a);
               return (
@@ -636,7 +704,7 @@ export default function Reader({
                           {names.map((n) => (
                             <button
                               key={n}
-                              className="chip chip-button"
+                              className="chip"
                               onClick={() => startListEdit(a, "collection")}
                               title="Edit collections"
                             >
@@ -674,6 +742,16 @@ export default function Reader({
               );
             })}
           </ul>
+          {annotations.length > HIGHLIGHTS_PREVIEW && (
+            <button
+              className="link-btn notes-more"
+              onClick={() => setShowAllHighlights(!showAllHighlights)}
+            >
+              {showAllHighlights
+                ? "Show fewer"
+                : `Show all ${annotations.length}`}
+            </button>
+          )}
         </details>
       )}
 
@@ -719,7 +797,7 @@ export default function Reader({
                 });
               }
             }}
-            onClickEmpty={() => setPopover(null)}
+            onClickEmpty={dismissPopover}
           />
         </Suspense>
       ) : doc.content ? (
@@ -850,6 +928,20 @@ export default function Reader({
             </div>
           )}
         </div>
+      )}
+
+      {/* ---------- Floating Snip button, once the top one is out of view ---------- */}
+      {!snipBarVisible && !snipMode && !snipFile && (
+        <button
+          className="snip-fab"
+          onClick={() => {
+            setPopover(null);
+            setSnipMode(true);
+          }}
+          title="Drag a box over a table or chart to save it"
+        >
+          <ScissorsIcon /> Snip
+        </button>
       )}
 
       {/* ---------- Snip mode: drag a box ---------- */}

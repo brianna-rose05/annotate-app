@@ -49,7 +49,7 @@ export function findPosition(text: string, anchor: Anchor): number {
 }
 
 // Wrap characters [start, end) of the article in <mark> tags
-function wrapRange(container: HTMLElement, start: number, end: number, id: string) {
+function wrapRange(container: HTMLElement, start: number, end: number, id: string, className?: string) {
   // Collect every piece of text in the article, in order
   const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
   const nodes: Text[] = [];
@@ -72,16 +72,22 @@ function wrapRange(container: HTMLElement, start: number, end: number, id: strin
     // Wrap that part in <mark>
     const mark = document.createElement("mark");
     mark.dataset.id = id;
+    if (className) mark.className = className;
     target.parentNode!.insertBefore(mark, target);
     mark.appendChild(target);
   }
 }
 
-// Find an anchor in the article and highlight it
-export function applyHighlight(container: HTMLElement, anchor: Anchor, id: string): boolean {
+// Highlights with a note are drawn as an underline instead of a yellow fill
+export function markClass(a: { note?: string }) {
+  return a.note?.trim() ? "has-note" : undefined;
+}
+
+// Find an anchor in the article and highlight it (className styles it, e.g. "has-note")
+export function applyHighlight(container: HTMLElement, anchor: Anchor, id: string, className?: string): boolean {
   const text = container.textContent ?? "";
   const start = findPosition(text, anchor);
   if (start === -1) return false; // text not found (article may have changed)
-  wrapRange(container, start, start + anchor.exact.length, id);
+  wrapRange(container, start, start + anchor.exact.length, id, className);
   return true;
 }

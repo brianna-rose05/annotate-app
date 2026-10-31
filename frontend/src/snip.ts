@@ -72,6 +72,13 @@ export type Box = { left: number; top: number; width: number; height: number };
 
 const SCALE = 2; // capture at 2× so snips stay sharp
 
+// A 1×1 transparent GIF. html-to-image redraws the WHOLE article and downloads every image in it;
+// ones from other sites (outside the box, so not proxied) are often blocked by CORS. Without a
+// fallback, one blocked image anywhere aborts the snip, so they become blank instead (they keep
+// their size, so the layout doesn't shift).
+const BLANK_IMAGE =
+  "data:image/gif;base64,R0lGODlhAQABAIAAAAAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==";
+
 function toBlob(canvas: HTMLCanvasElement): Promise<Blob> {
   return new Promise((resolve, reject) =>
     canvas.toBlob(
@@ -154,6 +161,8 @@ export async function snipHtml(
       width: part.width,
       height: part.height,
       backgroundColor: getComputedStyle(document.body).backgroundColor,
+      imagePlaceholder: BLANK_IMAGE,
+      onImageErrorHandler: () => {}, // an image that still won't load is skipped, not fatal
       style: {
         transform: `translate(${-(part.left - rect.left)}px, ${-(part.top - rect.top)}px)`,
         transformOrigin: "top left",

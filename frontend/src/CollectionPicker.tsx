@@ -9,6 +9,22 @@ const FolderIcon = () => (
   </svg>
 );
 
+// Picking an option removes it from the menu, so the menu shrinks (or disappears) under the
+// pointer and the mouseup lands on whatever is behind it — like the article, which then closes
+// the tooltip. Swallow that one mouseup and its click before anything else sees them.
+function swallowNextMouseUp() {
+  const stop = (e: Event) => e.stopPropagation();
+  const opts = { capture: true, once: true };
+  window.addEventListener("mouseup", stop, opts);
+  window.addEventListener("click", stop, opts);
+  // If no click follows the mouseup, don't leave the click listener waiting for a later one
+  window.addEventListener(
+    "mouseup",
+    () => setTimeout(() => window.removeEventListener("click", stop, { capture: true })),
+    opts,
+  );
+}
+
 export default function CollectionPicker({
   values,
   onChange,
@@ -116,7 +132,13 @@ export default function CollectionPicker({
       />
 
       {open && matches.length > 0 && (
-        <ul className="picker-menu" role="listbox">
+        <ul
+          className="picker-menu"
+          role="listbox"
+          // The menu can hang outside the tooltip, over the article: keep its events to itself
+          onMouseDown={(e) => e.stopPropagation()}
+          onMouseUp={(e) => e.stopPropagation()}
+        >
           {matches.map((o, i) => (
             <li
               key={o.collectionId}
@@ -126,7 +148,9 @@ export default function CollectionPicker({
               onMouseEnter={() => setActive(i)}
               onMouseLeave={() => setActive(null)}
               onMouseDown={(e) => {
-                e.preventDefault(); // add before the input loses focus
+                e.preventDefault(); // keep focus in the input, so the menu stays open
+                e.stopPropagation();
+                swallowNextMouseUp();
                 add(o.name);
               }}
             >

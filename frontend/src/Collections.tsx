@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
-import { apiFetch } from "./auth";
+import { apiFetch, errorMessage } from "./auth";
 
-const API_URL = import.meta.env.VITE_API_URL;
 
-export type Collection = { collectionId: string; name: string };
+export type Collection = {
+  collectionId: string;
+  name: string;
+  highlightCount?: number;
+};
 
 type CollectionHighlight = {
   annotationId: string;
@@ -16,22 +19,7 @@ type CollectionHighlight = {
   imageUrl?: string;
 };
 
-const FolderIcon = () => (
-  <svg
-    width="20"
-    height="20"
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-  >
-    <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
-  </svg>
-);
-
-// ---------- The grid of collections ----------
+// ---------- The list of collections ----------
 export function CollectionsList({
   onOpen,
 }: {
@@ -132,9 +120,11 @@ export function CollectionsList({
 
   if (!collections) {
     return (
-      <div className="collection-grid">
+      <div className="collection-list">
         {[1, 2, 3].map((n) => (
-          <div key={n} className="collection-card skeleton" />
+          <div key={n} className="collection-row" aria-hidden>
+            <div className="skeleton skeleton-line skeleton-line-short" />
+          </div>
         ))}
       </div>
     );
@@ -151,15 +141,20 @@ export function CollectionsList({
           </p>
         </div>
       ) : (
-        <div className="collection-grid">
+        <div className="collection-list">
           {collections.map((c) => (
             <button
               key={c.collectionId}
-              className="collection-card"
+              className="collection-row"
               onClick={() => onOpen(c)}
             >
-              <FolderIcon />
               <span className="collection-name">{c.name}</span>
+              {c.highlightCount !== undefined && (
+                <span className="meta">
+                  {c.highlightCount} highlight
+                  {c.highlightCount === 1 ? "" : "s"}
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -210,8 +205,8 @@ export function CollectionView({
     setBusy(true);
     setActionError("");
     try {
-      const res = await fetch(
-        `${API_URL}collections/${collection.collectionId}`,
+      const res = await apiFetch(
+        `collections/${collection.collectionId}`,
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -239,14 +234,19 @@ export function CollectionView({
     setBusy(true);
     setActionError("");
     try {
-      const res = await fetch(
-        `${API_URL}collections/${collection.collectionId}`,
+      const res = await apiFetch(
+        `collections/${collection.collectionId}`,
         { method: "DELETE" },
       );
-      if (!res.ok) throw new Error();
+      if (!res.ok)
+        throw new Error(
+          await errorMessage(res, "Couldn't delete this collection. Try again."),
+        );
       onDeleted();
-    } catch {
-      setActionError("Couldn't delete this collection. Try again.");
+    } catch (err) {
+      setActionError(
+        (err as Error).message || "Couldn't delete this collection. Try again.",
+      );
       setBusy(false);
     }
   }
@@ -272,7 +272,7 @@ export function CollectionView({
 
   return (
     <div>
-      <button className="btn btn-ghost back" onClick={onBack}>
+      <button className="link-btn back" onClick={onBack}>
         ← All collections
       </button>
 
@@ -364,26 +364,21 @@ export function CollectionView({
           <ul>
             {g.items.map((h) => (
               <li key={h.annotationId}>
-                <button
-                  className="note-quote"
-                  onClick={() => onOpenHighlight(g.docId, h.annotationId)}
-                >
-                  {h.kind === "area" && h.imageUrl ? (
-                    <button
-                      className="snip-thumb"
-                      onClick={() => onOpenHighlight(g.docId, h.annotationId)}
-                    >
-                      <img src={h.imageUrl} alt="Saved snip" />
-                    </button>
-                  ) : (
-                    <button
-                      className="note-quote"
-                      onClick={() => onOpenHighlight(g.docId, h.annotationId)}
-                    >
-                      “{h.exact}”
-                    </button>
-                  )}
-                </button>
+                {h.kind === "area" && h.imageUrl ? (
+                  <button
+                    className="snip-thumb"
+                    onClick={() => onOpenHighlight(g.docId, h.annotationId)}
+                  >
+                    <img src={h.imageUrl} alt="Saved snip" />
+                  </button>
+                ) : (
+                  <button
+                    className="note-quote"
+                    onClick={() => onOpenHighlight(g.docId, h.annotationId)}
+                  >
+                    “{h.exact}”
+                  </button>
+                )}
                 {h.note && <p className="note-text">{h.note}</p>}
               </li>
             ))}

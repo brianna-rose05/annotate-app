@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import CollectionPicker from "./CollectionPicker";
-import { apiFetch } from "./auth";
+import { apiFetch, errorMessage } from "./auth";
 
 const MAX_WIDTH = 2000; // shrink huge screenshots so they upload fast
 
@@ -58,7 +58,9 @@ export default function SnipEditor({
         method: "POST",
       });
       if (!linkRes.ok)
-        throw new Error("Couldn't get an upload link. Try again.");
+        throw new Error(
+          await errorMessage(linkRes, "Couldn't get an upload link. Try again."),
+        );
       const { uploadUrl, imageKey } = await linkRes.json();
 
       // 2. Upload the image straight to S3 (it never passes through the Lambda)
@@ -80,7 +82,10 @@ export default function SnipEditor({
           collections: names,
         }),
       });
-      if (!res.ok) throw new Error("Couldn't save the snip. Try again.");
+      if (!res.ok)
+        throw new Error(
+          await errorMessage(res, "Couldn't save the snip. Try again."),
+        );
 
       onSaved(names);
     } catch (err) {

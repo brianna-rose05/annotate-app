@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import Reader from "./Reader";
+import ConfirmDialog from "./ConfirmDialog";
 import {
   CollectionsList,
   CollectionView,
   type Collection,
 } from "./Collections";
-import { apiFetch } from "./auth";
+import { apiFetch, errorMessage } from "./auth";
 
 type Doc = {
   docId: string;
@@ -16,6 +17,7 @@ type Doc = {
   status?: string;
   error?: string;
   alreadySaved?: boolean;
+  duplicate?: boolean;
 };
 
 type Message = { type: "error" | "info"; text: string } | null;
@@ -28,6 +30,68 @@ function hostname(url: string) {
     return url;
   }
 }
+
+// Excerpts are often junk (all-caps banners, a repeat of the title, a stray word); hide those
+function isUsefulExcerpt(excerpt: string, title: string) {
+  const text = excerpt.trim();
+  if (text.length < 40) return false;
+
+  const letters = text.replace(/[^\p{L}]/gu, "");
+  const upper = letters.replace(/[^\p{Lu}]/gu, "");
+  if (letters.length > 0 && upper.length / letters.length > 0.6) return false;
+
+  // PDF front matter: emails, footnote marks, affiliations
+  if (/\S+@\S+\.\w/.test(text) || /[†‡∗]/.test(text)) return false;
+  if (looksLikeAuthorLine(text)) return false;
+
+  const words = (s: string) =>
+    s.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, "").split(/\s+/).filter(Boolean);
+  const titleStart = words(title).slice(0, 5);
+  const excerptStart = words(text).slice(0, titleStart.length);
+  if (
+    titleStart.length > 0 &&
+    titleStart.every((w, i) => w === excerptStart[i])
+  )
+    return false;
+
+  return true;
+}
+
+const AUTHOR_MARKERS = /\b(equal contribution|corresponding author|thanks:|affiliations?:)/i;
+const INSTITUTIONS =
+  /\b(universit(y|é|at|ät)|institute|department|laborator(y|ies)|college|school of|faculty of)\b/i;
+// Two or more names in a row at the start: "Jane Doe, John Q. Smith, …"
+const LEADING_NAMES =
+  /^(\p{Lu}[\p{L}.'-]*\s+(\p{Lu}[\p{L}.'-]*\s+)?\p{Lu}[\p{L}'-]+\d*(,\d+)*[,;]?\s+(and\s+)?){2,}/u;
+
+// "Arne Vanhoyweghen1,2, Vincent Holst1,2…" or "Jane Doe, John Smith, Stanford University"
+function looksLikeAuthorLine(text: string) {
+  if (AUTHOR_MARKERS.test(text)) return true;
+  // Names with affiliation numbers stuck on the end, like "Holst1,2"
+  const numberedNames = text.match(/\p{Ll}\d+(,\d+)*(?=[,\s*]|$)/gu) ?? [];
+  if (numberedNames.length >= 2) return true;
+  return (
+    INSTITUTIONS.test(text) &&
+    (numberedNames.length > 0 || LEADING_NAMES.test(text))
+  );
+}
+
+const TrashIcon = () => (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="M3 6h18" />
+    <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+    <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+  </svg>
+);
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString(undefined, {
@@ -44,7 +108,9 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [message, setMessage] = useState<Message>(null);
+  const [flashId, setFlashId] = useState<string | null>(null); // a row to briefly highlight
   const [tab, setTab] = useState<Tab>("articles");
+  const [pendingDelete, setPendingDelete] = useState<Doc | null>(null);
 
   // What's open right now
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -88,9 +154,13 @@ export default function App() {
     try {
       const doc = await saveUrl(url.trim());
       setUrl("");
-      if (doc.alreadySaved) {
-        setMessage({ type: "info", text: `Already saved: “${doc.title}”` });
-      } else if (doc.status === "failed") {
+      if (doc.duplicate || doc.alreadySaved) {
+        // Nothing new was saved: point at the copy that's already in the list
+        setMessage({ type: "info", text: "Already in your list" });
+        setFlashId(doc.docId);
+        return;
+      }
+      if (doc.status === "failed") {
         setMessage({
           type: "error",
           text: `Saved the link, but couldn't fetch the article: ${doc.error}`,
@@ -110,7 +180,8 @@ export default function App() {
     try {
       const saved = await saveUrl(doc.url);
       if (saved.docId !== doc.docId) {
-        await apiFetch(`documents/${doc.docId}`, { method: "DELETE" });
+        const res = await apiFetch(`documents/${doc.docId}`, { method: "DELETE" });
+        if (res.status === 403) throw new Error(await errorMessage(res, ""));
       }
       if (saved.status === "failed") {
         setMessage({
@@ -127,20 +198,22 @@ export default function App() {
   }
 
   async function handleDelete(doc: Doc) {
-    const name = doc.title ?? hostname(doc.url);
-    if (!window.confirm(`Delete “${name}” and all of its highlights?`)) return;
-
+    setPendingDelete(null);
     setBusyId(doc.docId);
     try {
       const res = await apiFetch(`documents/${doc.docId}`, {
         method: "DELETE",
       });
-      if (!res.ok && res.status !== 404) throw new Error();
+      if (!res.ok && res.status !== 404)
+        throw new Error(
+          await errorMessage(res, "Couldn't delete that article. Try again."),
+        );
       setDocs((current) => current.filter((d) => d.docId !== doc.docId));
-    } catch {
+    } catch (err) {
       setMessage({
         type: "error",
-        text: "Couldn't delete that article. Try again.",
+        text:
+          (err as Error).message || "Couldn't delete that article. Try again.",
       });
     } finally {
       setBusyId(null);
@@ -155,6 +228,23 @@ export default function App() {
   useEffect(() => {
     loadDocs();
   }, []);
+
+  // Info messages ("Already in your list") fade away on their own
+  useEffect(() => {
+    if (message?.type !== "info") return;
+    const timer = setTimeout(() => setMessage(null), 3000);
+    return () => clearTimeout(timer);
+  }, [message]);
+
+  // Scroll to the highlighted row, then let the highlight fade
+  useEffect(() => {
+    if (!flashId) return;
+    document
+      .querySelector(`[data-doc-id="${flashId}"]`)
+      ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    const timer = setTimeout(() => setFlashId(null), 2000);
+    return () => clearTimeout(timer);
+  }, [flashId]);
 
   // ---------- Reading an article ----------
   if (selectedId) {
@@ -256,7 +346,12 @@ export default function App() {
 
           <section className="doc-list">
             {loading ? (
-              [1, 2, 3].map((n) => <div key={n} className="card skeleton" />)
+              [1, 2, 3].map((n) => (
+                <div key={n} className="doc-row" aria-hidden>
+                  <div className="skeleton skeleton-line" />
+                  <div className="skeleton skeleton-line skeleton-line-short" />
+                </div>
+              ))
             ) : docs.length === 0 ? (
               <div className="empty">
                 <p className="empty-title">No articles yet</p>
@@ -268,57 +363,72 @@ export default function App() {
               docs.map((doc) => {
                 const failed = doc.status === "failed";
                 const busy = busyId === doc.docId;
+                const title = doc.title ?? doc.url;
                 return (
                   <article
                     key={doc.docId}
-                    className={`card ${failed ? "card-failed" : "card-clickable"} ${busy ? "card-busy" : ""}`}
+                    data-doc-id={doc.docId}
+                    className={`doc-row ${failed ? "doc-row-failed" : "doc-row-clickable"} ${busy ? "doc-row-busy" : ""} ${flashId === doc.docId ? "doc-row-flash" : ""}`}
                     onClick={() => !failed && !busy && openArticle(doc.docId)}
                   >
-                    <div className="card-meta">
-                      <span>{hostname(doc.url)}</span>
-                      <span aria-hidden>·</span>
-                      <span>{formatDate(doc.createdAt)}</span>
+                    <div className="doc-title-line">
+                      <h2 className="doc-title">{title}</h2>
+                      <button
+                        className="icon-btn doc-delete"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setPendingDelete(doc);
+                        }}
+                        disabled={busy}
+                        aria-label="Delete article"
+                        title="Delete"
+                      >
+                        <TrashIcon />
+                      </button>
                     </div>
 
-                    <h2 className="card-title">{doc.title ?? doc.url}</h2>
+                    <p className="meta">
+                      {hostname(doc.url)} · {formatDate(doc.createdAt)}
+                    </p>
 
                     {failed ? (
-                      <p className="card-error">
-                        Couldn't fetch this article: {doc.error}
-                      </p>
-                    ) : (
-                      doc.excerpt && (
-                        <p className="card-excerpt">{doc.excerpt}</p>
-                      )
-                    )}
-
-                    <div
-                      className="card-actions"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      {failed && (
+                      <p className="doc-error">
+                        Couldn't fetch this article: {doc.error}{" "}
                         <button
-                          className="btn btn-small"
-                          onClick={() => handleRetry(doc)}
+                          className="link-btn doc-retry"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleRetry(doc);
+                          }}
                           disabled={busy}
                         >
                           {busy ? "Retrying…" : "Retry"}
                         </button>
-                      )}
-                      <button
-                        className="btn btn-small btn-ghost"
-                        onClick={() => handleDelete(doc)}
-                        disabled={busy}
-                      >
-                        Delete
-                      </button>
-                    </div>
+                      </p>
+                    ) : (
+                      doc.excerpt &&
+                      isUsefulExcerpt(doc.excerpt, title) && (
+                        <p className="doc-excerpt">{doc.excerpt}</p>
+                      )
+                    )}
                   </article>
                 );
               })
             )}
           </section>
         </>
+      )}
+
+      {pendingDelete && (
+        <ConfirmDialog
+          title="Delete this article?"
+          confirmLabel="Delete"
+          onConfirm={() => handleDelete(pendingDelete)}
+          onCancel={() => setPendingDelete(null)}
+        >
+          <strong>{pendingDelete.title ?? hostname(pendingDelete.url)}</strong>{" "}
+          and all of its highlights will be permanently deleted.
+        </ConfirmDialog>
       )}
     </main>
   );

@@ -32,6 +32,18 @@ export function apiFetch(path: string, init: RequestInit = {}) {
   return fetch(`${API_URL}${path}`, { ...init, headers });
 }
 
+// The message to show when a write fails: the API's own message for a refused request
+// (like the read-only demo account), otherwise `fallback`
+export async function errorMessage(res: Response, fallback: string) {
+  if (res.status !== 403) return fallback;
+  try {
+    const data = await res.json();
+    return data.error || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 // Cognito needs its own sign-out page to end the session there too
 export function signOutUrl() {
   const back = encodeURIComponent(window.location.origin + "/");
