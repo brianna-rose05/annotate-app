@@ -186,6 +186,52 @@ async function getDocInfo(docId) {
   return { docTitle: Item.title ?? Item.url, docUrl: Item.url };
 }
 
+// The annotations table is keyed by docId, and every user who saves the same link gets the same
+// docId. So every read and write of a highlight must also check its userId.
+
+// This user's highlights on one article
+async function myAnnotations(docId) {
+  const { Items } = await db.send(new QueryCommand({
+    TableName: ANNOTATIONS_TABLE,
+    KeyConditionExpression: "docId = :d",
+    FilterExpression: "userId = :u",
+    ExpressionAttributeValues: { ":d": docId, ":u": USER_ID },
+  }));
+  return Items;
+}
+
+// One of this user's highlights, or null (also null if it belongs to someone else)
+async function getMyAnnotation(docId, annotationId) {
+  const { Item } = await db.send(new GetCommand({
+    TableName: ANNOTATIONS_TABLE,
+    Key: { docId, annotationId },
+  }));
+  return Item?.userId === USER_ID ? Item : null;
+}
+
+// Delete one of this user's highlights, plus its snip image and collection memberships.
+// Returns false if it doesn't exist or isn't theirs.
+async function deleteMyAnnotation(docId, annotationId) {
+  let Attributes;
+  try {
+    ({ Attributes } = await db.send(new DeleteCommand({
+      TableName: ANNOTATIONS_TABLE,
+      Key: { docId, annotationId },
+      ConditionExpression: "userId = :u", // fails if it's missing or someone else's
+      ExpressionAttributeValues: { ":u": USER_ID },
+      ReturnValues: "ALL_OLD",
+    })));
+  } catch (err) {
+    if (err.name === "ConditionalCheckFailedException") return false;
+    throw err;
+  }
+  await removeFromCollections(annotationId, [...(Attributes.collectionIds ?? [])]);
+  if (Attributes.imageKey) {
+    await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: Attributes.imageKey }));
+  }
+  return true;
+}
+
 // =====================================================================
 // Collection helpers
 // =====================================================================
@@ -279,7 +325,8 @@ async function collectionHighlights(collectionId) {
     const res = await db.send(new BatchGetCommand({
       RequestItems: { [ANNOTATIONS_TABLE]: { Keys: keys } },
     }));
-    highlights.push(...res.Responses[ANNOTATIONS_TABLE]);
+    // Membership rows are per-user, but double-check each highlight is really this user's
+    highlights.push(...res.Responses[ANNOTATIONS_TABLE].filter((h) => h.userId === USER_ID));
   }
 
   const sorted = highlights.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -605,21 +652,10 @@ export const handler = async (event) => {
         await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: Item.pdfKey }));
       }
 
-      // 2. All its highlights: their snip images, collection memberships, and the highlights themselves
-      const annotations = await db.send(new QueryCommand({
-        TableName: ANNOTATIONS_TABLE,
-        KeyConditionExpression: "docId = :d",
-        ExpressionAttributeValues: { ":d": docId },
-      }));
-      for (const a of annotations.Items) {
-        if (a.imageKey) {
-          await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: a.imageKey }));
-        }
-        await removeFromCollections(a.annotationId, [...(a.collectionIds ?? [])]);
-        await db.send(new DeleteCommand({
-          TableName: ANNOTATIONS_TABLE,
-          Key: { docId, annotationId: a.annotationId },
-        }));
+      // 2. My highlights on it: their snip images, collection memberships, and the highlights
+      //    themselves (other people who saved the same link keep theirs)
+      for (const a of await myAnnotations(docId)) {
+        await deleteMyAnnotation(docId, a.annotationId);
       }
 
       // 3. The document itself
@@ -648,12 +684,7 @@ export const handler = async (event) => {
     // List highlights for one article (with image links for snips)
     case "GET /documents/{docId}/annotations": {
       const { docId } = event.pathParameters;
-      const result = await db.send(new QueryCommand({
-        TableName: ANNOTATIONS_TABLE,
-        KeyConditionExpression: "docId = :d",
-        ExpressionAttributeValues: { ":d": docId },
-      }));
-      return json(200, await Promise.all(result.Items.map(withImageUrl)));
+      return json(200, await Promise.all((await myAnnotations(docId)).map(withImageUrl)));
     }
 
     // Save a new highlight or snip, in any number of collections
@@ -701,10 +732,8 @@ export const handler = async (event) => {
       const { docId, annotationId } = event.pathParameters;
       const body = JSON.parse(event.body || "{}");
 
-      const { Item: existing } = await db.send(new GetCommand({
-        TableName: ANNOTATIONS_TABLE,
-        Key: { docId, annotationId },
-      }));
+      // Someone else's highlight looks exactly like a missing one, so IDs don't leak
+      const existing = await getMyAnnotation(docId, annotationId);
       if (!existing) return json(404, { error: "not found" });
 
       const sets = [];
@@ -749,13 +778,20 @@ export const handler = async (event) => {
       if (sets.length) updateExpression += `SET ${sets.join(", ")} `;
       if (removes.length) updateExpression += `REMOVE ${removes.join(", ")}`;
 
-      const result = await db.send(new UpdateCommand({
-        TableName: ANNOTATIONS_TABLE,
-        Key: { docId, annotationId },
-        UpdateExpression: updateExpression.trim(),
-        ...(Object.keys(values).length ? { ExpressionAttributeValues: values } : {}),
-        ReturnValues: "ALL_NEW",
-      }));
+      let result;
+      try {
+        result = await db.send(new UpdateCommand({
+          TableName: ANNOTATIONS_TABLE,
+          Key: { docId, annotationId },
+          UpdateExpression: updateExpression.trim(),
+          ConditionExpression: "userId = :uid", // never update someone else's (or a deleted) highlight
+          ExpressionAttributeValues: { ...values, ":uid": USER_ID },
+          ReturnValues: "ALL_NEW",
+        }));
+      } catch (err) {
+        if (err.name === "ConditionalCheckFailedException") return json(404, { error: "not found" });
+        throw err;
+      }
 
       // Keep the membership table in sync
       await addToCollections(result.Attributes, added);
@@ -767,21 +803,7 @@ export const handler = async (event) => {
     // Delete a highlight or snip (and its memberships and image)
     case "DELETE /documents/{docId}/annotations/{annotationId}": {
       const { docId, annotationId } = event.pathParameters;
-      const { Item } = await db.send(new GetCommand({
-        TableName: ANNOTATIONS_TABLE,
-        Key: { docId, annotationId },
-      }));
-      if (Item) {
-        await removeFromCollections(annotationId, [...(Item.collectionIds ?? [])]);
-        if (Item.imageKey) {
-          await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: Item.imageKey }));
-        }
-      }
-
-      await db.send(new DeleteCommand({
-        TableName: ANNOTATIONS_TABLE,
-        Key: { docId, annotationId },
-      }));
+      if (!(await deleteMyAnnotation(docId, annotationId))) return json(404, { error: "not found" });
       return json(204, null);
     }
 
@@ -845,8 +867,8 @@ export const handler = async (event) => {
             TableName: ANNOTATIONS_TABLE,
             Key: { docId: m.docId, annotationId: m.annotationId },
             UpdateExpression: "DELETE collectionIds :c", // removes one value from a set
-            ConditionExpression: "attribute_exists(annotationId)",
-            ExpressionAttributeValues: { ":c": new Set([collectionId]) },
+            ConditionExpression: "userId = :u", // only if it still exists and is mine
+            ExpressionAttributeValues: { ":c": new Set([collectionId]), ":u": USER_ID },
           }));
         } catch (err) {
           if (err.name !== "ConditionalCheckFailedException") throw err;

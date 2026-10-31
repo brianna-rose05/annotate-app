@@ -53,6 +53,7 @@ locals {
   app_urls = [
     "http://localhost:5173/",
     "https://${aws_cloudfront_distribution.frontend.domain_name}/",
+    "https://${local.site_domain}/",
   ]
 }
 

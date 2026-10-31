@@ -57,6 +57,7 @@ resource "aws_s3_bucket_cors_configuration" "content" {
     allowed_methods = ["GET", "HEAD", "PUT"]
     allowed_origins = [
       "https://${aws_cloudfront_distribution.frontend.domain_name}",
+      "https://${local.site_domain}",
       "http://localhost:5173",
     ]
     allowed_headers = ["*"]
